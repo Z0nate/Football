@@ -132,7 +132,7 @@ const GOAL_WIDTH = 30, GOAL_HEIGHT = 180;
 const GOAL_TOP = (HEIGHT - GOAL_HEIGHT) / 2, GOAL_BOTTOM = GOAL_TOP + GOAL_HEIGHT;
 
 const PLAYER_RADIUS = 28, BALL_RADIUS = 18;
-const PLAYER_ACCEL = 0.3, PLAYER_FRICTION = 0.9, PLAYER_MAX_SPEED = 2;
+const PLAYER_ACCEL = 0.3, PLAYER_FRICTION = 0.9, PLAYER_MAX_SPEED = 6.5;
 const BALL_FRICTION = 0.985, KICK_POWER = 10, MAX_BALL_SPEED = 22;
 const KICK_RANGE = PLAYER_RADIUS + BALL_RADIUS + 12;
 const WIN_SCORE = 5;
@@ -945,14 +945,19 @@ function sendClientInput() {
   }
 }
 
-function tick() {
+let lastTime = 0;
+function tick(now) {
   requestAnimationFrame(tick);
   if (!game.players.length) return;
 
-  if (game.state === "playing") updatePlaying();
-  if (game.state === "replay") updateReplay();
-  if (game.state === "paused") updatePaused();
-  shaker.update();
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  const dtScale = dt * 60; // normalize to 60fps
+
+  if (game.state === "playing") updatePlaying(dtScale);
+  if (game.state === "replay") updateReplay(dtScale);
+  if (game.state === "paused") updatePaused(dtScale);
+  shaker.update(dtScale);
   render();
 
   if (net.online) {
@@ -974,10 +979,10 @@ function tick() {
     }
 
     // Check for dead connections (no activity for 5 seconds)
-    const now = Date.now();
+    const now2 = Date.now();
     if (net.isHost) {
       for (const entry of net.conns) {
-        if (entry.open && now - entry.lastActivity > 5000) {
+        if (entry.open && now2 - entry.lastActivity > 5000) {
           console.warn("Connection timed out:", entry.conn.peer);
         }
       }
