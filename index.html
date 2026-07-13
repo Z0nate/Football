@@ -26,9 +26,9 @@
   .overlay input {
     font-family: Consolas, monospace; font-size: 20px; text-align: center;
     padding: 10px; border-radius: 6px; border: 1px solid #444; background: #1a1a2e; color: white;
-    text-transform: uppercase; width: 220px;
+    text-transform: uppercase; width: 380px;
   }
-  .code { font-size: 40px; font-weight: bold; color: #ffd700; letter-spacing: 4px; }
+  .code { font-size: 26px; font-weight: bold; color: #ffd700; letter-spacing: 1px; word-break: break-all; max-width: 460px; }
   .hidden { display: none; }
 </style>
 </head>
@@ -55,7 +55,7 @@
   <div id="joinView" class="overlay hidden">
     <h1>JOIN GAME</h1>
     <p>Enter the room code your opponent shared with you:</p>
-    <input id="codeInput" maxlength="10" placeholder="ROOM CODE">
+    <input id="codeInput" maxlength="64" placeholder="ROOM CODE">
     <button id="joinConfirm">Connect</button>
     <p id="joinStatus"></p>
     <button class="ghost" id="joinCancel">Cancel</button>
@@ -78,8 +78,8 @@ const GOAL_WIDTH = 30, GOAL_HEIGHT = 180;
 const GOAL_TOP = (HEIGHT - GOAL_HEIGHT) / 2, GOAL_BOTTOM = GOAL_TOP + GOAL_HEIGHT;
 
 const PLAYER_RADIUS = 28, BALL_RADIUS = 18;
-const PLAYER_ACCEL = 0.65, PLAYER_FRICTION = 0.88, PLAYER_MAX_SPEED = 4.2;
-const BALL_FRICTION = 0.985, KICK_POWER = 15, MAX_BALL_SPEED = 22;
+const PLAYER_ACCEL = 0.3, PLAYER_FRICTION = 0.9, PLAYER_MAX_SPEED = 2;
+const BALL_FRICTION = 0.985, KICK_POWER = 10, MAX_BALL_SPEED = 22;
 const KICK_RANGE = PLAYER_RADIUS + BALL_RADIUS + 12;
 const WIN_SCORE = 5;
 const REPLAY_MAX_FRAMES = 180;
@@ -702,7 +702,14 @@ function render() {
   const index = game.state === "replay" ? game.replayIndex : netHistory.length - 1;
   if (ghost && history.length) drawGhostTrails(history, index);
 
-  const activeParticles = net.online && !net.isHost ? netParticles : particles;
+  let activeParticles;
+  if (game.state === "replay" && game.replayFrames.length) {
+    activeParticles = game.replayFrames[game.replayIndex].particles;
+  } else if (net.online && !net.isHost) {
+    activeParticles = netParticles;
+  } else {
+    activeParticles = particles;
+  }
   drawParticleList(activeParticles);
 
   if (ghost) {
@@ -727,9 +734,18 @@ function broadcastState() {
   net.conn.send({ type: "state", snap: getSnapshot() });
 }
 
+let lastInputStr = "";
+let lastNetworkActivity = Date.now();
+let netTick = 0;
+
 function sendClientInput() {
   if (!net.conn || !net.conn.open) return;
-  net.conn.send({ type: "input", input: readInput(WASD_KEYS) });
+  const currentInput = readInput(WASD_KEYS);
+  const inputStr = JSON.stringify(currentInput);
+  if (inputStr !== lastInputStr) {
+    net.conn.send({ type: "input", input: currentInput });
+    lastInputStr = inputStr;
+  }
 }
 
 function tick() {
@@ -741,11 +757,24 @@ function tick() {
   shaker.update();
   render();
 
-  if (net.online && net.isHost) broadcastState();
-  if (net.online && !net.isHost) sendClientInput();
+  if (net.online) {
+    if (!net.isHost && Date.now() - lastNetworkActivity > 3000) {
+      showNotice("Host disconnected.");
+      return;
+    }
+
+    netTick++;
+    if (net.isHost && netTick % 2 === 0) {
+      broadcastState();
+    }
+    if (!net.isHost) {
+      sendClientInput();
+    }
+  }
 }
 
 function handlePeerData(msg) {
+  lastNetworkActivity = Date.now();
   if (net.isHost) {
     if (msg.type === "input") net.remoteInput = msg.input;
     if (msg.type === "kick" && game.state === "playing") game.ball.kick(game.p2);
@@ -762,8 +791,10 @@ window.addEventListener("keydown", e => {
     return;
   }
   if (net.online && !net.isHost) {
-    if (e.code === "Space" && game.state === "playing" && net.conn && net.conn.open) net.conn.send({ type: "kick" });
-    return;
+    if (e.code === "Space" && game.state === "playing" && net.conn && net.conn.open) {
+      net.conn.send({ type: "kick" });
+      return;
+    }
   }
   if (game.state !== "playing") return;
   if (e.code === "Space") game.ball.kick(game.p1);
@@ -793,6 +824,7 @@ function showNotice(text) {
 }
 
 function setupConnection() {
+  lastNetworkActivity = Date.now();
   net.conn.on("data", handlePeerData);
   net.conn.on("close", () => showNotice("Opponent disconnected."));
   net.conn.on("error", () => showNotice("Connection error."));
