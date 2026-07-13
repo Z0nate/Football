@@ -744,8 +744,17 @@ function updatePlaying() {
   const playerCount = game.players.length;
 
   if (net.online) {
+    // Host controls player 0 with their own keyboard
+    // Other players use remote inputs from clients
     for (let i = 0; i < playerCount; i++) {
-      const input = net.remoteInputs[i] || { up: false, down: false, left: false, right: false };
+      let input;
+      if (i === 0) {
+        // Host's own player - read keyboard
+        input = readInput(KEY_MAPS.p1);
+      } else {
+        // Remote players
+        input = net.remoteInputs[i] || { up: false, down: false, left: false, right: false };
+      }
       game.players[i].update(input);
     }
   } else {
@@ -892,7 +901,7 @@ function broadcastState() {
   const snap = getSnapshot();
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      entry.conn.send({ type: "state", snap });
+      safeSend(entry.conn, { type: "state", snap });
     }
   }
 }
@@ -901,7 +910,7 @@ function broadcastLobby() {
   const lobby = getLobbyState();
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      entry.conn.send({ type: "lobby", lobby });
+      safeSend(entry.conn, { type: "lobby", lobby });
     }
   }
 }
@@ -929,7 +938,7 @@ function sendClientInput() {
   if (inputStr !== lastInputStr) {
     for (const entry of net.conns) {
       if (entry.conn && entry.conn.open) {
-        entry.conn.send({ type: "input", input: myInput, playerIdx: net.myPlayerIdx });
+        safeSend(entry.conn, { type: "input", input: myInput, playerIdx: net.myPlayerIdx });
       }
     }
     lastInputStr = inputStr;
@@ -950,10 +959,42 @@ function tick() {
     netTick++;
     if (net.isHost && netTick % 2 === 0) broadcastState();
     if (!net.isHost) sendClientInput();
+
+    // Keepalive ping every 150 frames (~2.5s at 60fps)
+    if (netTick % 150 === 0) {
+      if (net.isHost) {
+        for (const entry of net.conns) {
+          safeSend(entry.conn, { type: "ping" });
+        }
+      } else {
+        for (const entry of net.conns) {
+          safeSend(entry.conn, { type: "ping" });
+        }
+      }
+    }
+
+    // Check for dead connections (no activity for 5 seconds)
+    const now = Date.now();
+    if (net.isHost) {
+      for (const entry of net.conns) {
+        if (entry.open && now - entry.lastActivity > 5000) {
+          console.warn("Connection timed out:", entry.conn.peer);
+        }
+      }
+    }
   }
 }
 
 function handlePeerData(msg, fromConn) {
+  if (msg.type === "ping") {
+    safeSend(fromConn, { type: "pong" });
+    return;
+  }
+  if (msg.type === "pong") {
+    const entry = net.conns.find(c => c.conn === fromConn);
+    if (entry) entry.lastActivity = Date.now();
+    return;
+  }
   if (net.isHost) {
     if (msg.type === "teamPick") {
       const entry = net.conns.find(c => c.conn === fromConn);
@@ -1063,7 +1104,7 @@ window.addEventListener("keydown", e => {
     if (e.code === "Space" && game.state === "playing") {
       for (const entry of net.conns) {
         if (entry.conn && entry.conn.open) {
-          entry.conn.send({ type: "kick", playerIdx: net.myPlayerIdx });
+          safeSend(entry.conn, { type: "kick", playerIdx: net.myPlayerIdx });
         }
       }
       return;
@@ -1163,21 +1204,50 @@ function updatePlayerList() {
   }
 }
 
+
+function safeSend(conn, data) {
+  if (conn && conn.open) {
+    try {
+      conn.send(data);
+    } catch (e) {
+      console.error("Send failed:", e);
+    }
+  }
+}
 function setupConnection(conn) {
-  const entry = { conn, playerIdx: -1, team: 0, lastActivity: Date.now() };
+  const entry = { conn, playerIdx: -1, team: 0, lastActivity: Date.now(), open: false };
   net.conns.push(entry);
 
-  conn.on("data", data => handlePeerData(data, conn));
-  conn.on("close", () => {
-    showNotice("A player disconnected.");
-  });
-  conn.on("error", () => {
-    showNotice("Connection error.");
+  conn.on("open", () => {
+    entry.open = true;
+    entry.lastActivity = Date.now();
+    // Small delay to ensure client is ready to receive
+    setTimeout(() => {
+      safeSend(conn, { type: "lobby", lobby: getLobbyState() });
+    }, 100);
+    updatePlayerList();
   });
 
-  // Send lobby state so client can pick team
-  conn.send({ type: "lobby", lobby: getLobbyState() });
-  updatePlayerList();
+  conn.on("data", data => handlePeerData(data, conn));
+
+  conn.on("close", () => {
+    const wasOpen = entry.open;
+    entry.open = false;
+    // Remove from connections list
+    net.conns = net.conns.filter(c => c.conn !== conn);
+    updatePlayerList();
+    // Only show disconnect notice if connection was open and game is in progress
+    if (wasOpen && game.state !== "menu" && game.state !== "gameover") {
+      showNotice("A player disconnected.");
+    }
+  });
+
+  conn.on("error", (err) => {
+    console.error("Connection error:", err);
+    net.conns = net.conns.filter(c => c.conn !== conn);
+    updatePlayerList();
+    // Don't destroy host on transient errors
+  });
 }
 
 // Host mode selection
@@ -1215,7 +1285,7 @@ document.getElementById("hostStart").addEventListener("click", () => {
   document.getElementById("hostStartGame").classList.add("hidden");
   updatePlayerList();
 
-  net.peer = new Peer();
+  net.peer = new Peer({ config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:global.stun.twilio.com:3478" }] } });
   net.peer.on("open", id => {
     document.getElementById("roomCode").textContent = id.toUpperCase();
     document.getElementById("hostStatus").textContent = "Waiting for players to join…";
@@ -1223,7 +1293,8 @@ document.getElementById("hostStart").addEventListener("click", () => {
   });
   net.peer.on("connection", conn => {
     const maxClients = selectedMode === "2v2" ? 3 : 1;
-    if (net.conns.filter(c => c.conn && c.conn.open).length >= maxClients) {
+    const openCount = net.conns.filter(c => c.open).length;
+    if (openCount >= maxClients) {
       conn.close();
       return;
     }
@@ -1231,14 +1302,22 @@ document.getElementById("hostStart").addEventListener("click", () => {
     net.isHost = true;
     setupConnection(conn);
   });
-  net.peer.on("error", () => showNotice("Could not reach the multiplayer relay. Check your connection."));
+  net.peer.on("error", (err) => {
+    console.log("Host peer error:", err.type, err.message);
+    const fatal = ["browser-incompatible", "invalid-id", "invalid-key", "server-error", "socket-error", "socket-closed"];
+    if (fatal.includes(err.type)) {
+      showNotice("Could not reach the multiplayer relay. Check your connection.");
+    }
+    // Non-fatal errors (peer-unavailable, network, disconnected, webrtc) are ignored
+    // so the host stays alive for other clients to connect
+  });
 });
 
 document.getElementById("hostStartGame").addEventListener("click", () => {
   // Notify all clients that game is starting
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      entry.conn.send({ type: "start", mode: selectedMode });
+      safeSend(entry.conn, { type: "start", mode: selectedMode });
     }
   }
   hostView.classList.add("hidden");
@@ -1266,29 +1345,61 @@ document.getElementById("joinConfirm").addEventListener("click", () => {
   if (!code) return;
 
   document.getElementById("joinStatus").textContent = "Connecting…";
-  net.peer = new Peer();
+  net.peer = new Peer({ config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:global.stun.twilio.com:3478" }] } });
+
+  let connectTimeout = setTimeout(() => {
+    document.getElementById("joinStatus").textContent = "Connection timed out. Host may be unreachable.";
+    teardownPeer();
+  }, 15000);
+
   net.peer.on("open", () => {
-    const conn = net.peer.connect(code);
-    net.conns = [{ conn, playerIdx: -1, team: 0, lastActivity: Date.now() }];
+    const conn = net.peer.connect(code, { reliable: true });
+    net.conns = [{ conn, playerIdx: -1, team: 0, lastActivity: Date.now(), open: false }];
+
+    conn.on("data", data => handlePeerData(data, conn));
+
     conn.on("open", () => {
+      clearTimeout(connectTimeout);
+      net.conns[0].open = true;
       net.online = true;
       net.isHost = false;
-      conn.on("data", data => handlePeerData(data, conn));
-      conn.on("close", () => showNotice("Host disconnected."));
-      conn.on("error", () => showNotice("Connection error."));
       joinView.classList.add("hidden");
       showOnly(joinTeamView);
     });
-    conn.on("error", () => { document.getElementById("joinStatus").textContent = "Could not connect. Check the room code."; });
+
+    conn.on("close", () => {
+      clearTimeout(connectTimeout);
+      if (game.state !== "menu" && game.state !== "gameover") {
+        showNotice("Host disconnected.");
+      }
+    });
+
+    conn.on("error", (err) => {
+      clearTimeout(connectTimeout);
+      console.error("Client connection error:", err);
+      document.getElementById("joinStatus").textContent = "Connection failed. Try again.";
+    });
   });
-  net.peer.on("error", () => { document.getElementById("joinStatus").textContent = "Could not reach the multiplayer relay."; });
+
+  net.peer.on("error", (err) => {
+    clearTimeout(connectTimeout);
+    console.log("Client peer error:", err.type, err.message);
+    const fatal = ["browser-incompatible", "invalid-id", "invalid-key", "server-error", "socket-error", "socket-closed"];
+    if (fatal.includes(err.type)) {
+      document.getElementById("joinStatus").textContent = "Could not reach the multiplayer relay.";
+    } else if (err.type === "peer-unavailable") {
+      document.getElementById("joinStatus").textContent = "Room not found. Check the room code.";
+    } else if (err.type === "network") {
+      document.getElementById("joinStatus").textContent = "Network error. Check your connection.";
+    }
+  });
 });
 
 // Team selection buttons
 document.getElementById("pickT1").addEventListener("click", () => {
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      entry.conn.send({ type: "teamPick", team: 1 });
+      safeSend(entry.conn, { type: "teamPick", team: 1 });
     }
   }
   document.getElementById("pickT1").classList.add("picked");
@@ -1298,7 +1409,7 @@ document.getElementById("pickT1").addEventListener("click", () => {
 document.getElementById("pickT2").addEventListener("click", () => {
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      entry.conn.send({ type: "teamPick", team: 2 });
+      safeSend(entry.conn, { type: "teamPick", team: 2 });
     }
   }
   document.getElementById("pickT2").classList.add("picked");
