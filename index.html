@@ -2,35 +2,57 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Football Online</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.5/peerjs.min.js"></script>
 <style>
-  html, body { margin: 0; background: #0f0f19; height: 100%; display: flex; align-items: center; justify-content: center; }
+  html, body { margin: 0; background: #0f0f19; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; }
   #wrap { position: relative; }
-  canvas { background: #0f0f19; max-width: 100vw; max-height: 100vh; }
+  canvas { background: #0f0f19; max-width: 100vw; max-height: 100vh; display: block; }
   .overlay {
     position: absolute; inset: 0; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 18px;
+    align-items: center; justify-content: center; gap: 14px;
     background: radial-gradient(circle at 50% 40%, #1a1a2e, #0f0f19);
     color: #dcdce6; font-family: Consolas, monospace; text-align: center;
+    padding: 20px;
   }
-  .overlay h1 { font-family: Impact, sans-serif; font-size: 60px; color: #ff6432; margin: 0; letter-spacing: 2px; }
-  .overlay p { color: #96969e; margin: 0; line-height: 1.6; max-width: 480px; }
+  .overlay h1 { font-family: Impact, sans-serif; font-size: 52px; color: #ff6432; margin: 0; letter-spacing: 2px; }
+  .overlay p { color: #96969e; margin: 0; line-height: 1.6; max-width: 480px; font-size: 14px; }
   .overlay button {
-    font-family: Consolas, monospace; font-size: 20px; font-weight: bold;
-    padding: 13px 36px; background: #ff6432; color: #0f0f19; border: none;
-    border-radius: 6px; cursor: pointer;
+    font-family: Consolas, monospace; font-size: 18px; font-weight: bold;
+    padding: 12px 32px; background: #ff6432; color: #0f0f19; border: none;
+    border-radius: 6px; cursor: pointer; min-width: 200px;
   }
   .overlay button:hover { background: #ff8050; }
-  .overlay button.ghost { background: transparent; color: #96969e; border: 1px solid #444; padding: 8px 24px; font-size: 15px; }
+  .overlay button.ghost { background: transparent; color: #96969e; border: 1px solid #444; padding: 8px 20px; font-size: 14px; min-width: auto; }
   .overlay input {
-    font-family: Consolas, monospace; font-size: 20px; text-align: center;
+    font-family: Consolas, monospace; font-size: 18px; text-align: center;
     padding: 10px; border-radius: 6px; border: 1px solid #444; background: #1a1a2e; color: white;
-    text-transform: uppercase; width: 380px;
+    text-transform: uppercase; width: 320px;
   }
-  .code { font-size: 26px; font-weight: bold; color: #ffd700; letter-spacing: 1px; word-break: break-all; max-width: 460px; }
-  .hidden { display: none; }
+  .code { font-size: 22px; font-weight: bold; color: #ffd700; letter-spacing: 1px; word-break: break-all; max-width: 400px; }
+  .mode-btn { display: flex; gap: 12px; }
+  .mode-btn button { min-width: 120px; }
+  .mode-btn button.selected { background: #ffd700; color: #0f0f19; }
+  .team-btn { display: flex; gap: 16px; margin: 8px 0; }
+  .team-btn button { min-width: 140px; font-size: 16px; }
+  .team-btn button.t1 { background: rgb(0,220,255); color: #0f0f19; }
+  .team-btn button.t1:hover { background: rgb(0,180,220); }
+  .team-btn button.t1:disabled { background: #333; color: #666; cursor: not-allowed; }
+  .team-btn button.t2 { background: rgb(255,60,80); color: #0f0f19; }
+  .team-btn button.t2:hover { background: rgb(220,40,60); }
+  .team-btn button.t2:disabled { background: #333; color: #666; cursor: not-allowed; }
+  .team-btn button.picked { box-shadow: 0 0 0 3px #ffd700; }
+  .hidden { display: none !important; }
+  .small { font-size: 12px; color: #666; }
+  .player-list { text-align: left; font-size: 13px; color: #96969e; min-width: 200px; }
+  .player-list span { display: block; margin: 3px 0; padding: 4px 8px; border-radius: 4px; }
+  .player-list .host { background: rgba(255,255,255,0.05); }
+  .player-list .t1 { background: rgba(0,220,255,0.1); color: rgb(0,220,255); }
+  .player-list .t2 { background: rgba(255,60,80,0.1); color: rgb(255,60,80); }
+  .player-list .waiting { opacity: 0.4; }
 </style>
+<base target="_blank">
 </head>
 <body>
 <div id="wrap">
@@ -44,21 +66,53 @@
     <button id="joinBtn">Join Online Game</button>
   </div>
 
+  <div id="hostMenu" class="overlay hidden">
+    <h1>HOST GAME</h1>
+    <p>Choose your game mode:</p>
+    <div class="mode-btn">
+      <button id="host1v1" class="selected">1v1</button>
+      <button id="host2v2">2v2</button>
+    </div>
+    <p class="small" id="modeDesc">Classic duel. 2 players total.</p>
+    <button id="hostStart">Start Hosting</button>
+    <button class="ghost" id="hostMenuBack">Back</button>
+  </div>
+
   <div id="hostView" class="overlay hidden">
     <h1>HOSTING</h1>
-    <p>Share this room code with your opponent:</p>
+    <p>Share this room code with your friends:</p>
     <div class="code" id="roomCode">------</div>
-    <p id="hostStatus">Waiting for opponent to join&hellip;</p>
+    <div class="player-list" id="playerList"></div>
+    <p id="hostStatus">Waiting for players to join…</p>
+    <button id="hostStartGame" class="hidden">Start Game</button>
     <button class="ghost" id="hostCancel">Cancel</button>
   </div>
 
   <div id="joinView" class="overlay hidden">
     <h1>JOIN GAME</h1>
-    <p>Enter the room code your opponent shared with you:</p>
+    <p>Enter the room code your host shared with you:</p>
     <input id="codeInput" maxlength="64" placeholder="ROOM CODE">
     <button id="joinConfirm">Connect</button>
     <p id="joinStatus"></p>
     <button class="ghost" id="joinCancel">Cancel</button>
+  </div>
+
+  <div id="joinTeamView" class="overlay hidden">
+    <h1>PICK YOUR TEAM</h1>
+    <p id="teamStatus">Choose which team you want to play for:</p>
+    <div class="team-btn">
+      <button id="pickT1" class="t1">Team 1</button>
+      <button id="pickT2" class="t2">Team 2</button>
+    </div>
+    <p class="small" id="teamInfo"></p>
+    <button class="ghost" id="teamCancel">Cancel</button>
+  </div>
+
+  <div id="joinWaitView" class="overlay hidden">
+    <h1>READY</h1>
+    <p id="waitStatus">Waiting for host to start the game…</p>
+    <div class="player-list" id="waitPlayerList"></div>
+    <button class="ghost" id="waitCancel">Leave</button>
   </div>
 
   <div id="noticeView" class="overlay hidden">
@@ -310,7 +364,17 @@ class Ball {
       const overlap = minDist - d;
       const nx = (this.x - player.x) / d, ny = (this.y - player.y) / d;
       this.x += nx * overlap; this.y += ny * overlap;
-      this.vx += player.vx * 0.35; this.vy += player.vy * 0.35;
+
+      // Reflect ball velocity off collision normal (bounce)
+      const dot = this.vx * nx + this.vy * ny;
+      if (dot < 0) {
+        this.vx -= 2 * dot * nx;
+        this.vy -= 2 * dot * ny;
+      }
+      // Add player momentum
+      this.vx += player.vx * 0.35;
+      this.vy += player.vy * 0.35;
+
       this.lastToucher = player;
       shaker.add(3);
       spawnParticles(this.x, this.y, "white", 8, 4, 18, 4);
@@ -377,12 +441,17 @@ function resolvePlayerCollisions(players) {
 
 function drawField() {
   const tile = 40;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(FIELD_LEFT, FIELD_TOP, FIELD_WIDTH, FIELD_HEIGHT);
+  ctx.clip();
   for (let y = FIELD_TOP; y < FIELD_BOTTOM; y += tile) {
     for (let x = FIELD_LEFT; x < FIELD_RIGHT; x += tile) {
       ctx.fillStyle = (((x / tile) | 0) + ((y / tile) | 0)) % 2 === 0 ? GRASS_LIGHT : GRASS_DARK;
       ctx.fillRect(x, y, tile, tile);
     }
   }
+  ctx.restore();
   ctx.strokeStyle = "white";
   ctx.lineWidth = 4;
   ctx.strokeRect(FIELD_LEFT, FIELD_TOP, FIELD_WIDTH, FIELD_HEIGHT);
@@ -491,6 +560,16 @@ function drawReplayBanner() {
   ctx.fillText("REPLAY", WIDTH / 2, 82);
 }
 
+function drawPauseCountdown() {
+  const count = Math.ceil(game.pauseTimer / 30);
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.font = "bold 72px Impact, sans-serif";
+  ctx.fillStyle = "black";
+  ctx.fillText(count, WIDTH / 2 + 3, HEIGHT / 2 - 47);
+  ctx.fillStyle = GOLD;
+  ctx.fillText(count, WIDTH / 2, HEIGHT / 2 - 50);
+}
+
 function drawGhostCircle(x, y, radius, color, alpha) {
   ctx.globalAlpha = alpha;
   ctx.fillStyle = color;
@@ -500,17 +579,16 @@ function drawGhostCircle(x, y, radius, color, alpha) {
   ctx.globalAlpha = 1;
 }
 
-// Used whenever positions come from a recorded/received snapshot instead of
-// a local physics step (replay playback, network client) so trails still
-// follow the target rather than a frozen local Trail buffer.
 function drawGhostTrails(history, index) {
   const trailLen = 10;
-  for (let pIdx = 0; pIdx < 2; pIdx++) {
-    const color = pIdx === 0 ? TEAM1_GLOW : TEAM2_GLOW;
+  const playerCount = history[index].players.length;
+  for (let pIdx = 0; pIdx < playerCount; pIdx++) {
+    const color = history[index].players[pIdx].team === 1 ? TEAM1_GLOW : TEAM2_GLOW;
     for (let t = 1; t <= trailLen; t++) {
       const idx = index - t;
       if (idx < 0) break;
       const fp = history[idx].players[pIdx];
+      if (!fp) break;
       const alpha = (180 * (1 - t / (trailLen + 1))) / 255;
       drawGhostCircle(fp.x, fp.y, PLAYER_RADIUS - 8, color, alpha);
     }
@@ -520,38 +598,69 @@ function drawGhostTrails(history, index) {
     const idx = index - t;
     if (idx < 0) break;
     const fb = history[idx].ball;
+    if (!fb) break;
     const alpha = (180 * (1 - t / (ballTrailLen + 1))) / 255;
     drawGhostCircle(fb.x, fb.y, BALL_RADIUS - 4, "rgb(255,255,200)", alpha);
   }
 }
 
+// ===== GAME STATE =====
 const game = {
   state: "menu",
-  p1: null, p2: null, ball: null,
+  mode: "1v1",
+  players: [],
+  ball: null,
   score1: 0, score2: 0,
   winner: null, winnerName: "",
   goalMessage: "", goalTimer: 0,
   replayFrames: [], replayIndex: 0,
   keysDown: new Set(),
+  pauseTimer: 0,
 };
 
-const net = { online: false, isHost: false, peer: null, conn: null, remoteInput: { up: false, down: false, left: false, right: false } };
+// ===== NETWORK STATE =====
+const net = {
+  online: false,
+  isHost: false,
+  peer: null,
+  conns: [],
+  myPlayerIdx: -1,
+  myTeam: 0,
+  remoteInputs: {},
+};
 let netHistory = [];
 let netParticles = [];
 
-const WASD_KEYS = { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD" };
-const ARROW_KEYS = { up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight" };
+// Key maps for all 4 players
+const KEY_MAPS = {
+  p1: { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD", kick: "Space" },
+  p2: { up: "KeyT", down: "KeyG", left: "KeyF", right: "KeyH", kick: "KeyY" },
+  p3: { up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", kick: "Enter" },
+  p4: { up: "KeyI", down: "KeyK", left: "KeyJ", right: "KeyL", kick: "KeyO" },
+};
 
-function makePlayers() {
-  return [
-    new Player(FIELD_LEFT + 100, HEIGHT / 2, "1", 1, "Team 1"),
-    new Player(FIELD_RIGHT - 100, HEIGHT / 2, "2", 2, "Team 2"),
-  ];
+function readInput(keyMap) {
+  return {
+    up: game.keysDown.has(keyMap.up),
+    down: game.keysDown.has(keyMap.down),
+    left: game.keysDown.has(keyMap.left),
+    right: game.keysDown.has(keyMap.right),
+  };
 }
 
-function startMatch() {
-  const [p1, p2] = makePlayers();
-  game.p1 = p1; game.p2 = p2;
+function makePlayers(mode) {
+  const is2v2 = mode === "2v2";
+  const players = [];
+  players.push(new Player(FIELD_LEFT + 80, HEIGHT / 2 - (is2v2 ? 120 : 0), "1", 1, "T1 P1"));
+  if (is2v2) players.push(new Player(FIELD_LEFT + 80, HEIGHT / 2 + 120, "2", 1, "T1 P2"));
+  players.push(new Player(FIELD_RIGHT - 80, HEIGHT / 2 - (is2v2 ? 120 : 0), is2v2 ? "3" : "2", 2, "T2 P1"));
+  if (is2v2) players.push(new Player(FIELD_RIGHT - 80, HEIGHT / 2 + 120, "4", 2, "T2 P2"));
+  return players;
+}
+
+function startMatch(mode) {
+  game.mode = mode || "1v1";
+  game.players = makePlayers(game.mode);
   game.ball = new Ball(WIDTH / 2, HEIGHT / 2);
   game.score1 = 0; game.score2 = 0;
   game.winner = null; game.winnerName = "";
@@ -562,16 +671,20 @@ function startMatch() {
 }
 
 function resetPositions() {
-  game.p1.x = FIELD_LEFT + 100; game.p1.y = HEIGHT / 2;
-  game.p2.x = FIELD_RIGHT - 100; game.p2.y = HEIGHT / 2;
-  for (const p of [game.p1, game.p2]) { p.vx = 0; p.vy = 0; p.trail.clear(); }
+  const is2v2 = game.mode === "2v2";
+  game.players[0].x = FIELD_LEFT + 80; game.players[0].y = HEIGHT / 2 - (is2v2 ? 120 : 0);
+  if (is2v2) { game.players[1].x = FIELD_LEFT + 80; game.players[1].y = HEIGHT / 2 + 120; }
+  const t2Idx = is2v2 ? 2 : 1;
+  game.players[t2Idx].x = FIELD_RIGHT - 80; game.players[t2Idx].y = HEIGHT / 2 - (is2v2 ? 120 : 0);
+  if (is2v2) { game.players[3].x = FIELD_RIGHT - 80; game.players[3].y = HEIGHT / 2 + 120; }
+  for (const p of game.players) { p.vx = 0; p.vy = 0; p.trail.clear(); }
   game.ball.trail.clear();
 }
 
 function getSnapshot() {
   return {
     ball: { x: game.ball.x, y: game.ball.y, vx: game.ball.vx, vy: game.ball.vy },
-    players: [game.p1, game.p2].map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy })),
+    players: game.players.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, team: p.team })),
     particles: serializeParticles(particles),
     scores: [game.score1, game.score2],
     goalMessage: game.goalMessage,
@@ -579,6 +692,8 @@ function getSnapshot() {
     replay: game.state === "replay",
     winner: game.winner || 0,
     winnerName: game.winnerName || "",
+    shake: shaker.shake,
+    mode: game.mode,
   };
 }
 
@@ -598,7 +713,8 @@ function triggerGoal(scorer) {
   spawnParticles(game.ball.x, game.ball.y, GOLD, 40, 10, 50, 8);
   spawnParticles(game.ball.x, game.ball.y, "white", 20, 7, 40, 5);
 
-  game.p1.trail.clear(); game.p2.trail.clear(); game.ball.trail.clear();
+  for (const p of game.players) p.trail.clear();
+  game.ball.trail.clear();
   game.replayFrames.push(getSnapshot());
   game.replayIndex = 0;
   game.goalTimer = game.replayFrames.length + 60;
@@ -614,27 +730,40 @@ function endReplay() {
   game.ball.reset();
   resetPositions();
   particles = [];
-  game.state = game.winner ? "gameover" : "playing";
-}
-
-function readInput(keyMap) {
-  return {
-    up: game.keysDown.has(keyMap.up),
-    down: game.keysDown.has(keyMap.down),
-    left: game.keysDown.has(keyMap.left),
-    right: game.keysDown.has(keyMap.right),
-  };
+  if (game.winner) {
+    game.state = "gameover";
+  } else {
+    game.state = "paused";
+    game.pauseTimer = 90;
+  }
 }
 
 function updatePlaying() {
   if (net.online && !net.isHost) return;
 
-  const p2Input = net.online ? net.remoteInput : readInput(ARROW_KEYS);
-  game.p1.update(readInput(WASD_KEYS));
-  game.p2.update(p2Input);
-  resolvePlayerCollisions([game.p1, game.p2]);
+  const playerCount = game.players.length;
 
-  const scorer = game.ball.update([game.p1, game.p2]);
+  if (net.online) {
+    for (let i = 0; i < playerCount; i++) {
+      const input = net.remoteInputs[i] || { up: false, down: false, left: false, right: false };
+      game.players[i].update(input);
+    }
+  } else {
+    const is2v2 = game.mode === "2v2";
+    if (is2v2) {
+      game.players[0].update(readInput(KEY_MAPS.p1));
+      game.players[1].update(readInput(KEY_MAPS.p2));
+      game.players[2].update(readInput(KEY_MAPS.p3));
+      game.players[3].update(readInput(KEY_MAPS.p4));
+    } else {
+      game.players[0].update(readInput(KEY_MAPS.p1));
+      game.players[1].update(readInput(KEY_MAPS.p3));
+    }
+  }
+
+  resolvePlayerCollisions(game.players);
+
+  const scorer = game.ball.update(game.players);
   for (const pt of particles) pt.update();
   particles = particles.filter(pt => pt.life > 0);
 
@@ -649,22 +778,47 @@ function updateReplay() {
   if (game.replayIndex >= game.replayFrames.length) endReplay();
 }
 
+function updatePaused() {
+  if (net.online && !net.isHost) return;
+  game.pauseTimer -= 1;
+  if (game.pauseTimer <= 0) {
+    game.state = "playing";
+    game.pauseTimer = 0;
+  }
+}
+
 function applyReplayFrame(frame) {
   game.ball.x = frame.ball.x; game.ball.y = frame.ball.y;
-  const players = [game.p1, game.p2];
-  frame.players.forEach((fp, i) => { players[i].x = fp.x; players[i].y = fp.y; });
+  game.ball.vx = frame.ball.vx; game.ball.vy = frame.ball.vy;
+  frame.players.forEach((fp, i) => {
+    if (game.players[i]) {
+      game.players[i].x = fp.x; game.players[i].y = fp.y;
+      game.players[i].vx = fp.vx; game.players[i].vy = fp.vy;
+    }
+  });
+  if (frame.shake !== undefined) shaker.shake = frame.shake;
 }
 
 function applyNetworkState(snap) {
+  if (snap.mode && snap.mode !== game.mode) {
+    game.mode = snap.mode;
+    game.players = makePlayers(game.mode);
+  }
+
   game.ball.x = snap.ball.x; game.ball.y = snap.ball.y;
   game.ball.vx = snap.ball.vx; game.ball.vy = snap.ball.vy;
-  const players = [game.p1, game.p2];
-  snap.players.forEach((sp, i) => { players[i].x = sp.x; players[i].y = sp.y; players[i].vx = sp.vx; players[i].vy = sp.vy; });
+  snap.players.forEach((sp, i) => {
+    if (game.players[i]) {
+      game.players[i].x = sp.x; game.players[i].y = sp.y;
+      game.players[i].vx = sp.vx; game.players[i].vy = sp.vy;
+    }
+  });
 
   game.score1 = snap.scores[0]; game.score2 = snap.scores[1];
   game.goalMessage = snap.goalMessage; game.goalTimer = snap.goalTimer;
   game.winner = snap.winner || null; game.winnerName = snap.winnerName;
   game.state = game.winner ? "gameover" : (snap.replay ? "replay" : "playing");
+  if (snap.shake !== undefined) shaker.shake = snap.shake;
   netParticles = snap.particles;
 
   netHistory.push({ players: snap.players, ball: snap.ball });
@@ -672,7 +826,7 @@ function applyNetworkState(snap) {
 }
 
 function isGhostMode() {
-  return game.state === "replay" || (net.online && !net.isHost);
+  return game.state === "replay" || game.state === "paused" || (net.online && !net.isHost);
 }
 
 function drawParticleList(list) {
@@ -713,9 +867,11 @@ function render() {
   drawParticleList(activeParticles);
 
   if (ghost) {
-    game.ball.drawShape(); game.p1.drawShape(); game.p2.drawShape();
+    game.ball.drawShape();
+    for (const p of game.players) p.drawShape();
   } else {
-    game.ball.draw(); game.p1.draw(); game.p2.draw();
+    game.ball.draw();
+    for (const p of game.players) p.draw();
   }
 
   drawScores(game.score1, game.score2);
@@ -725,96 +881,234 @@ function render() {
     game.goalTimer -= 1;
   }
   if (game.state === "gameover") drawWinner(game.winner, game.winnerName);
+  if (game.state === "paused") drawPauseCountdown();
 
   ctx.restore();
 }
 
+// ===== NETWORK FUNCTIONS =====
+
 function broadcastState() {
-  if (!net.conn || !net.conn.open) return;
-  net.conn.send({ type: "state", snap: getSnapshot() });
+  const snap = getSnapshot();
+  for (const entry of net.conns) {
+    if (entry.conn && entry.conn.open) {
+      entry.conn.send({ type: "state", snap });
+    }
+  }
+}
+
+function broadcastLobby() {
+  const lobby = getLobbyState();
+  for (const entry of net.conns) {
+    if (entry.conn && entry.conn.open) {
+      entry.conn.send({ type: "lobby", lobby });
+    }
+  }
+}
+
+function getLobbyState() {
+  const t1Count = 1 + net.conns.filter(c => c.team === 1).length;
+  const t2Count = net.conns.filter(c => c.team === 2).length;
+  return {
+    mode: selectedMode,
+    t1Count,
+    t2Count,
+    t1Full: t1Count >= (selectedMode === "2v2" ? 2 : 1),
+    t2Full: t2Count >= (selectedMode === "2v2" ? 2 : 1),
+    players: net.conns.map(c => ({ team: c.team, playerIdx: c.playerIdx })),
+  };
 }
 
 let lastInputStr = "";
-let lastNetworkActivity = Date.now();
 let netTick = 0;
 
 function sendClientInput() {
-  if (!net.conn || !net.conn.open) return;
-  const currentInput = readInput(WASD_KEYS);
-  const inputStr = JSON.stringify(currentInput);
+  if (!net.conns.length) return;
+  const myInput = readInput(KEY_MAPS.p1);
+  const inputStr = JSON.stringify(myInput);
   if (inputStr !== lastInputStr) {
-    net.conn.send({ type: "input", input: currentInput });
+    for (const entry of net.conns) {
+      if (entry.conn && entry.conn.open) {
+        entry.conn.send({ type: "input", input: myInput, playerIdx: net.myPlayerIdx });
+      }
+    }
     lastInputStr = inputStr;
   }
 }
 
 function tick() {
   requestAnimationFrame(tick);
-  if (!game.p1) return;
+  if (!game.players.length) return;
 
   if (game.state === "playing") updatePlaying();
   if (game.state === "replay") updateReplay();
+  if (game.state === "paused") updatePaused();
   shaker.update();
   render();
 
   if (net.online) {
-    if (!net.isHost && Date.now() - lastNetworkActivity > 3000) {
-      showNotice("Host disconnected.");
-      return;
-    }
-
     netTick++;
-    if (net.isHost && netTick % 2 === 0) {
-      broadcastState();
-    }
-    if (!net.isHost) {
-      sendClientInput();
-    }
+    if (net.isHost && netTick % 2 === 0) broadcastState();
+    if (!net.isHost) sendClientInput();
   }
 }
 
-function handlePeerData(msg) {
-  lastNetworkActivity = Date.now();
+function handlePeerData(msg, fromConn) {
   if (net.isHost) {
-    if (msg.type === "input") net.remoteInput = msg.input;
-    if (msg.type === "kick" && game.state === "playing") game.ball.kick(game.p2);
+    if (msg.type === "teamPick") {
+      const entry = net.conns.find(c => c.conn === fromConn);
+      if (entry) {
+        const is2v2 = selectedMode === "2v2";
+        const maxPerTeam = is2v2 ? 2 : 1;
+        const t1Slots = is2v2 ? [0, 1] : [0];
+        const t2Slots = is2v2 ? [2, 3] : [1];
+
+        let chosenTeam = msg.team;
+        let playerIdx = -1;
+
+        // Check if preferred team has space
+        const teamSlots = chosenTeam === 1 ? t1Slots : t2Slots;
+        const taken = net.conns.filter(c => c.team === chosenTeam).map(c => c.playerIdx);
+        const available = teamSlots.filter(s => !taken.includes(s));
+
+        if (available.length > 0) {
+          playerIdx = available[0];
+        } else {
+          // Preferred team full, try other team
+          const otherTeam = chosenTeam === 1 ? 2 : 1;
+          const otherSlots = otherTeam === 1 ? t1Slots : t2Slots;
+          const otherTaken = net.conns.filter(c => c.team === otherTeam).map(c => c.playerIdx);
+          const otherAvailable = otherSlots.filter(s => !otherTaken.includes(s));
+          if (otherAvailable.length > 0) {
+            chosenTeam = otherTeam;
+            playerIdx = otherAvailable[0];
+          }
+        }
+
+        if (playerIdx >= 0) {
+          entry.team = chosenTeam;
+          entry.playerIdx = playerIdx;
+          net.remoteInputs[playerIdx] = { up: false, down: false, left: false, right: false };
+          fromConn.send({ type: "assign", playerIdx, team: chosenTeam, mode: selectedMode });
+          broadcastLobby();
+          updatePlayerList();
+        }
+      }
+    }
+    if (msg.type === "input") {
+      const entry = net.conns.find(c => c.conn === fromConn);
+      if (entry && entry.playerIdx >= 0) {
+        net.remoteInputs[entry.playerIdx] = msg.input;
+        entry.lastActivity = Date.now();
+      }
+    }
+    if (msg.type === "kick") {
+      const entry = net.conns.find(c => c.conn === fromConn);
+      if (entry && entry.playerIdx >= 0 && game.state === "playing" && game.players[entry.playerIdx]) {
+        game.ball.kick(game.players[entry.playerIdx]);
+      }
+    }
     return;
   }
   if (msg.type === "state") applyNetworkState(msg.snap);
+  if (msg.type === "lobby") updateClientLobby(msg.lobby);
+  if (msg.type === "assign") {
+    net.myPlayerIdx = msg.playerIdx;
+    net.myTeam = msg.team;
+    if (msg.mode) game.mode = msg.mode;
+    showOnly(document.getElementById("joinWaitView"));
+    document.getElementById("waitStatus").textContent = `You are on Team ${msg.team} (Player ${msg.playerIdx + 1}). Waiting for host to start...`;
+  }
+  if (msg.type === "start") {
+    document.getElementById("joinWaitView").classList.add("hidden");
+    startMatch(msg.mode);
+  }
+}
+
+function updateClientLobby(lobby) {
+  const t1Btn = document.getElementById("pickT1");
+  const t2Btn = document.getElementById("pickT2");
+  const info = document.getElementById("teamInfo");
+
+  if (t1Btn && t2Btn) {
+    t1Btn.disabled = lobby.t1Full;
+    t2Btn.disabled = lobby.t2Full;
+  }
+
+  if (info) {
+    info.textContent = `Team 1: ${lobby.t1Count}/${lobby.mode === "2v2" ? 2 : 1} | Team 2: ${lobby.t2Count}/${lobby.mode === "2v2" ? 2 : 1}`;
+  }
+
+  // Update wait view player list
+  const waitList = document.getElementById("waitPlayerList");
+  if (waitList) {
+    let html = `<span class="host">Host</span>`;
+    lobby.players.forEach(p => {
+      const cls = p.team === 1 ? "t1" : "t2";
+      html += `<span class="${cls}">Player ${p.playerIdx + 1} (Team ${p.team})</span>`;
+    });
+    waitList.innerHTML = html;
+  }
 }
 
 window.addEventListener("keydown", e => {
   game.keysDown.add(e.code);
 
   if (e.code === "KeyR" && game.state === "gameover" && (!net.online || net.isHost)) {
-    startMatch();
+    startMatch(game.mode);
     return;
   }
+
   if (net.online && !net.isHost) {
-    if (e.code === "Space" && game.state === "playing" && net.conn && net.conn.open) {
-      net.conn.send({ type: "kick" });
+    if (e.code === "Space" && game.state === "playing") {
+      for (const entry of net.conns) {
+        if (entry.conn && entry.conn.open) {
+          entry.conn.send({ type: "kick", playerIdx: net.myPlayerIdx });
+        }
+      }
       return;
     }
+    return;
   }
+
   if (game.state !== "playing") return;
-  if (e.code === "Space") game.ball.kick(game.p1);
-  if (!net.online && e.code === "Enter") game.ball.kick(game.p2);
+
+  const is2v2 = game.mode === "2v2";
+  if (e.code === KEY_MAPS.p1.kick && game.players[0]) game.ball.kick(game.players[0]);
+  if (is2v2 && e.code === KEY_MAPS.p2.kick && game.players[1]) game.ball.kick(game.players[1]);
+  if (!net.online) {
+    const t2Start = is2v2 ? 2 : 1;
+    if (e.code === KEY_MAPS.p3.kick && game.players[t2Start]) game.ball.kick(game.players[t2Start]);
+    if (is2v2 && e.code === KEY_MAPS.p4.kick && game.players[3]) game.ball.kick(game.players[3]);
+  }
 });
 window.addEventListener("keyup", e => game.keysDown.delete(e.code));
 
+// ===== UI =====
 const menu = document.getElementById("menu");
+const hostMenu = document.getElementById("hostMenu");
 const hostView = document.getElementById("hostView");
 const joinView = document.getElementById("joinView");
+const joinTeamView = document.getElementById("joinTeamView");
+const joinWaitView = document.getElementById("joinWaitView");
 const noticeView = document.getElementById("noticeView");
 
 function showOnly(view) {
-  for (const el of [menu, hostView, joinView, noticeView]) el.classList.add("hidden");
+  for (const el of [menu, hostMenu, hostView, joinView, joinTeamView, joinWaitView, noticeView]) {
+    el.classList.add("hidden");
+  }
   view.classList.remove("hidden");
 }
 
 function teardownPeer() {
   if (net.peer) net.peer.destroy();
-  net.peer = null; net.conn = null; net.online = false;
+  net.peer = null;
+  net.conns = [];
+  net.online = false;
+  net.isHost = false;
+  net.myPlayerIdx = -1;
+  net.myTeam = 0;
+  net.remoteInputs = {};
 }
 
 function showNotice(text) {
@@ -823,36 +1117,132 @@ function showNotice(text) {
   showOnly(noticeView);
 }
 
-function setupConnection() {
-  lastNetworkActivity = Date.now();
-  net.conn.on("data", handlePeerData);
-  net.conn.on("close", () => showNotice("Opponent disconnected."));
-  net.conn.on("error", () => showNotice("Connection error."));
+function updatePlayerList() {
+  const list = document.getElementById("playerList");
+  if (!list) return;
+  const is2v2 = selectedMode === "2v2";
+  const maxPlayers = is2v2 ? 4 : 2;
+  const connected = net.conns.filter(c => c.conn && c.conn.open);
+  const currentPlayers = 1 + connected.length;
+
+  let html = "";
+  html += `<span class="host">Host (You) ${is2v2 ? "— Team 1" : ""}</span>`;
+
+  connected.forEach(c => {
+    const teamLabel = c.team === 1 ? "Team 1" : "Team 2";
+    html += `<span class="${c.team === 1 ? "t1" : "t2"}">Player ${c.playerIdx + 1} — ${teamLabel}</span>`;
+  });
+
+  // Show empty slots
+  for (let i = connected.length; i < maxPlayers - 1; i++) {
+    html += `<span class="waiting">Waiting...</span>`;
+  }
+
+  list.innerHTML = html;
+
+  const startBtn = document.getElementById("hostStartGame");
+  if (startBtn) {
+    const t1Count = 1 + connected.filter(c => c.team === 1).length;
+    const t2Count = connected.filter(c => c.team === 2).length;
+    const t1Need = is2v2 ? 2 : 1;
+    const t2Need = is2v2 ? 2 : 1;
+    const canStart = t1Count >= t1Need && t2Count >= t2Need;
+
+    if (canStart) {
+      startBtn.classList.remove("hidden");
+      document.getElementById("hostStatus").textContent = "Teams ready! Click Start Game.";
+    } else {
+      startBtn.classList.add("hidden");
+      const needT1 = Math.max(0, t1Need - t1Count);
+      const needT2 = Math.max(0, t2Need - t2Count);
+      let msg = "Waiting for players...";
+      if (needT1 > 0) msg += ` Need ${needT1} more on Team 1.`;
+      if (needT2 > 0) msg += ` Need ${needT2} more on Team 2.`;
+      document.getElementById("hostStatus").textContent = msg;
+    }
+  }
 }
+
+function setupConnection(conn) {
+  const entry = { conn, playerIdx: -1, team: 0, lastActivity: Date.now() };
+  net.conns.push(entry);
+
+  conn.on("data", data => handlePeerData(data, conn));
+  conn.on("close", () => {
+    showNotice("A player disconnected.");
+  });
+  conn.on("error", () => {
+    showNotice("Connection error.");
+  });
+
+  // Send lobby state so client can pick team
+  conn.send({ type: "lobby", lobby: getLobbyState() });
+  updatePlayerList();
+}
+
+// Host mode selection
+let selectedMode = "1v1";
+document.getElementById("host1v1").addEventListener("click", () => {
+  selectedMode = "1v1";
+  document.getElementById("host1v1").classList.add("selected");
+  document.getElementById("host2v2").classList.remove("selected");
+  document.getElementById("modeDesc").textContent = "Classic duel. 2 players total.";
+});
+document.getElementById("host2v2").addEventListener("click", () => {
+  selectedMode = "2v2";
+  document.getElementById("host2v2").classList.add("selected");
+  document.getElementById("host1v1").classList.remove("selected");
+  document.getElementById("modeDesc").textContent = "Team battle. 4 players total (2 per team).";
+});
 
 document.getElementById("localBtn").addEventListener("click", () => {
   menu.classList.add("hidden");
-  startMatch();
+  startMatch("1v1");
 });
 
 document.getElementById("hostBtn").addEventListener("click", () => {
+  showOnly(hostMenu);
+});
+
+document.getElementById("hostMenuBack").addEventListener("click", () => {
+  showOnly(menu);
+});
+
+document.getElementById("hostStart").addEventListener("click", () => {
   showOnly(hostView);
   document.getElementById("roomCode").textContent = "------";
   document.getElementById("hostStatus").textContent = "Connecting to relay…";
+  document.getElementById("hostStartGame").classList.add("hidden");
+  updatePlayerList();
 
   net.peer = new Peer();
   net.peer.on("open", id => {
     document.getElementById("roomCode").textContent = id.toUpperCase();
-    document.getElementById("hostStatus").textContent = "Waiting for opponent to join…";
+    document.getElementById("hostStatus").textContent = "Waiting for players to join…";
+    updatePlayerList();
   });
   net.peer.on("connection", conn => {
-    net.conn = conn;
-    net.isHost = true; net.online = true;
-    setupConnection();
-    hostView.classList.add("hidden");
-    startMatch();
+    const maxClients = selectedMode === "2v2" ? 3 : 1;
+    if (net.conns.filter(c => c.conn && c.conn.open).length >= maxClients) {
+      conn.close();
+      return;
+    }
+    net.online = true;
+    net.isHost = true;
+    setupConnection(conn);
   });
   net.peer.on("error", () => showNotice("Could not reach the multiplayer relay. Check your connection."));
+});
+
+document.getElementById("hostStartGame").addEventListener("click", () => {
+  // Notify all clients that game is starting
+  for (const entry of net.conns) {
+    if (entry.conn && entry.conn.open) {
+      entry.conn.send({ type: "start", mode: selectedMode });
+    }
+  }
+  hostView.classList.add("hidden");
+  startMatch(selectedMode);
 });
 
 document.getElementById("hostCancel").addEventListener("click", () => {
@@ -878,16 +1268,51 @@ document.getElementById("joinConfirm").addEventListener("click", () => {
   document.getElementById("joinStatus").textContent = "Connecting…";
   net.peer = new Peer();
   net.peer.on("open", () => {
-    net.conn = net.peer.connect(code);
-    net.conn.on("open", () => {
-      net.isHost = false; net.online = true;
-      setupConnection();
+    const conn = net.peer.connect(code);
+    net.conns = [{ conn, playerIdx: -1, team: 0, lastActivity: Date.now() }];
+    conn.on("open", () => {
+      net.online = true;
+      net.isHost = false;
+      conn.on("data", data => handlePeerData(data, conn));
+      conn.on("close", () => showNotice("Host disconnected."));
+      conn.on("error", () => showNotice("Connection error."));
       joinView.classList.add("hidden");
-      startMatch();
+      showOnly(joinTeamView);
     });
-    net.conn.on("error", () => { document.getElementById("joinStatus").textContent = "Could not connect. Check the room code."; });
+    conn.on("error", () => { document.getElementById("joinStatus").textContent = "Could not connect. Check the room code."; });
   });
   net.peer.on("error", () => { document.getElementById("joinStatus").textContent = "Could not reach the multiplayer relay."; });
+});
+
+// Team selection buttons
+document.getElementById("pickT1").addEventListener("click", () => {
+  for (const entry of net.conns) {
+    if (entry.conn && entry.conn.open) {
+      entry.conn.send({ type: "teamPick", team: 1 });
+    }
+  }
+  document.getElementById("pickT1").classList.add("picked");
+  document.getElementById("pickT2").classList.remove("picked");
+});
+
+document.getElementById("pickT2").addEventListener("click", () => {
+  for (const entry of net.conns) {
+    if (entry.conn && entry.conn.open) {
+      entry.conn.send({ type: "teamPick", team: 2 });
+    }
+  }
+  document.getElementById("pickT2").classList.add("picked");
+  document.getElementById("pickT1").classList.remove("picked");
+});
+
+document.getElementById("teamCancel").addEventListener("click", () => {
+  teardownPeer();
+  showOnly(menu);
+});
+
+document.getElementById("waitCancel").addEventListener("click", () => {
+  teardownPeer();
+  showOnly(menu);
 });
 
 document.getElementById("noticeOk").addEventListener("click", () => {
