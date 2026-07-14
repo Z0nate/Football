@@ -64,7 +64,6 @@
   .joy-knob {
     position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px;
     border-radius: 50%; background: rgba(255,100,50,0.85); border: 2px solid rgba(255,255,255,0.5);
-    will-change: transform;
   }
   .kick-btn {
     position: absolute; bottom: 36px; width: 92px; height: 92px; border-radius: 50%;
@@ -72,28 +71,18 @@
     font-family: Consolas, monospace; font-weight: bold; font-size: 15px;
     display: flex; align-items: center; justify-content: center;
     touch-action: none; pointer-events: auto; user-select: none;
-    will-change: transform, background;
   }
   .kick-btn.left { left: 172px; }
   .kick-btn.right { right: 172px; }
   .kick-btn.corner-right { right: 30px; }
-  .kick-btn.active { background: rgba(255,140,80,0.95); transform: scale(0.95); }
-  #netStatus {
-    position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
-    font-family: Consolas, monospace; font-size: 11px; padding: 3px 10px;
-    border-radius: 4px; background: rgba(0,0,0,0.6); color: #888;
-    pointer-events: none; z-index: 10; opacity: 0; transition: opacity 0.3s;
-  }
-  #netStatus.visible { opacity: 1; }
-  #netStatus.warn { color: #ff6432; }
-  #netStatus.good { color: #32ff64; }
+  .kick-btn.active { background: rgba(255,140,80,0.95); }
 </style>
+<base target="_blank">
 <base target="_blank">
 </head>
 <body>
 <div id="wrap">
   <canvas id="game" width="1200" height="750"></canvas>
-  <div id="netStatus"></div>
 
   <div id="menu" class="overlay">
     <h1>FOOTBALL ONLINE</h1>
@@ -174,7 +163,6 @@
 </div>
 
 <script>
-// ==================== CONSTANTS ====================
 const WIDTH = 1200, HEIGHT = 750, MARGIN = 55;
 const FIELD_LEFT = MARGIN, FIELD_RIGHT = WIDTH - MARGIN;
 const FIELD_TOP = MARGIN, FIELD_BOTTOM = HEIGHT - MARGIN;
@@ -191,14 +179,6 @@ const WIN_SCORE = 5;
 const REPLAY_MAX_FRAMES = 180;
 const GHOST_HISTORY_MAX = 14;
 
-const PHYSICS_HZ = 60;
-const PHYSICS_DT = 1 / PHYSICS_HZ;
-const MAX_PARTICLES = 300;
-const NET_BUFFER_SIZE = 10; // interpolation buffer size
-const NET_TICK_RATE = 2; // host broadcasts every 2 physics frames (30Hz)
-const INPUT_BUFFER_SIZE = 8;
-const KICK_COOLDOWN = 8; // physics frames
-
 const TEAM1_COLOR = "rgb(0,220,255)", TEAM1_GLOW = "rgb(0,180,220)";
 const TEAM2_COLOR = "rgb(255,60,80)", TEAM2_GLOW = "rgb(220,40,60)";
 const GOLD = "rgb(255,215,0)";
@@ -209,36 +189,7 @@ const ctx = canvas.getContext("2d");
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
-const lerp = (a, b, t) => a + (b - a) * t;
 
-// ==================== FIXED TIMESTEP ENGINE ====================
-class FixedTimestep {
-  constructor(physicsHz, maxSteps = 3) {
-    this.physicsDt = 1 / physicsHz;
-    this.maxSteps = maxSteps;
-    this.accumulator = 0;
-    this.time = 0;
-    this.lastTime = performance.now();
-  }
-  tick(now, updateFn, renderFn) {
-    const frameTime = Math.min((now - this.lastTime) / 1000, 0.25); // cap at 250ms
-    this.lastTime = now;
-    this.accumulator += frameTime;
-
-    let steps = 0;
-    while (this.accumulator >= this.physicsDt && steps < this.maxSteps) {
-      updateFn(this.physicsDt);
-      this.accumulator -= this.physicsDt;
-      this.time += this.physicsDt;
-      steps++;
-    }
-
-    const alpha = this.accumulator / this.physicsDt;
-    renderFn(alpha);
-  }
-}
-
-// ==================== TRAIL ====================
 class Trail {
   constructor(maxLen) { this.maxLen = maxLen; this.points = []; }
   add(x, y) {
@@ -262,71 +213,40 @@ class Trail {
   }
 }
 
-// ==================== PARTICLE POOL ====================
-class ParticlePool {
-  constructor(maxSize) {
-    this.maxSize = maxSize;
-    this.particles = [];
-    this.pool = [];
-  }
-  spawn(x, y, color, speed, life, size) {
-    if (this.particles.length >= this.maxSize) return;
-    let p = this.pool.pop();
-    if (!p) p = {};
+class Particle {
+  constructor(x, y, color, speed, life, size) {
     const angle = Math.random() * Math.PI * 2;
-    p.x = x; p.y = y;
-    p.vx = Math.cos(angle) * speed;
-    p.vy = Math.sin(angle) * speed;
-    p.color = color;
-    p.life = life; p.maxLife = life;
-    p.size = size;
-    this.particles.push(p);
+    this.x = x; this.y = y;
+    this.vx = Math.cos(angle) * speed;
+    this.vy = Math.sin(angle) * speed;
+    this.color = color;
+    this.life = life; this.maxLife = life;
+    this.size = size;
   }
   update() {
-    for (let i = this.particles.length - 1; i >= 0; i--) {
-      const p = this.particles[i];
-      p.x += p.vx; p.y += p.vy;
-      p.vy += 0.15;
-      p.life -= 1;
-      p.size = Math.max(0, p.size - 0.15);
-      if (p.life <= 0 || p.size <= 0) {
-        this.pool.push(this.particles.splice(i, 1)[0]);
-      }
-    }
-  }
-  clear() { this.pool.push(...this.particles); this.particles = []; }
-  draw() {
-    for (const p of this.particles) {
-      ctx.globalAlpha = p.life / p.maxLife;
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
+    this.x += this.vx; this.y += this.vy;
+    this.vy += 0.15;
+    this.life -= 1;
+    this.size = Math.max(0, this.size - 0.15);
   }
 }
 
-const particlePool = new ParticlePool(MAX_PARTICLES);
-
+let particles = [];
 function spawnParticles(x, y, color, count, speed, life, size) {
   for (let i = 0; i < count; i++) {
-    particlePool.spawn(x, y, color, 2 + Math.random() * (speed - 2), life, 2 + Math.random() * (size - 2));
+    particles.push(new Particle(x, y, color, 2 + Math.random() * (speed - 2), life, 2 + Math.random() * (size - 2)));
   }
 }
 function spawnKickRipple(x, y, color) {
   for (let i = 0; i < 8; i++) {
-    particlePool.spawn(x, y, color, 1 + Math.random() * 2, 20, 4 + Math.random() * 4);
+    particles.push(new Particle(x, y, color, 1 + Math.random() * 2, 20, 4 + Math.random() * 4));
   }
 }
 function serializeParticles(list) {
   return list.map(p => ({ x: p.x, y: p.y, color: p.color, size: p.size, alpha: p.life / p.maxLife }));
 }
 
-// ==================== SCREEN SHAKE ====================
-const shaker = {
-  shake: 0, decay: 0.85,
-  add(v) { this.shake = Math.max(this.shake, v); },
+const shaker = { shake: 0, decay: 0.9, add(v) { this.shake = Math.max(this.shake, v); },
   update() { this.shake *= this.decay; if (this.shake < 0.5) this.shake = 0; },
   offset() {
     if (this.shake <= 0) return [0, 0];
@@ -335,20 +255,13 @@ const shaker = {
   }
 };
 
-// ==================== PLAYER ====================
 class Player {
   constructor(x, y, label, team, nickname) {
     this.x = x; this.y = y; this.vx = 0; this.vy = 0;
     this.label = label; this.team = team; this.nickname = nickname;
     this.trail = new Trail(10);
-    // Interpolation state for network smoothing
-    this.renderX = x; this.renderY = y;
-    this.prevX = x; this.prevY = y;
-    this.kickCooldown = 0;
   }
   update(input) {
-    if (this.kickCooldown > 0) this.kickCooldown--;
-
     let ax = 0, ay = 0;
     if (input.up) ay -= PLAYER_ACCEL;
     if (input.down) ay += PLAYER_ACCEL;
@@ -371,11 +284,6 @@ class Player {
     if (speed > 1) this.trail.add(this.x, this.y);
     this.trail.update();
   }
-  storePrev() { this.prevX = this.x; this.prevY = this.y; }
-  interpolate(alpha) {
-    this.renderX = lerp(this.prevX, this.x, alpha);
-    this.renderY = lerp(this.prevY, this.y, alpha);
-  }
   draw() {
     const glow = this.team === 1 ? TEAM1_GLOW : TEAM2_GLOW;
     this.trail.draw(PLAYER_RADIUS - 8, glow);
@@ -384,39 +292,38 @@ class Player {
   drawShape() {
     const color = this.team === 1 ? TEAM1_COLOR : TEAM2_COLOR;
     const glow = this.team === 1 ? TEAM1_GLOW : TEAM2_GLOW;
-    const x = this.renderX, y = this.renderY;
 
     ctx.globalAlpha = 0.24;
     ctx.fillStyle = "black";
     ctx.beginPath();
-    ctx.ellipse(x, y + 5, PLAYER_RADIUS + 2, PLAYER_RADIUS - 4, 0, 0, Math.PI * 2);
+    ctx.ellipse(this.x, this.y + 5, PLAYER_RADIUS + 2, PLAYER_RADIUS - 4, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
 
     ctx.globalAlpha = 0.3;
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(x, y, PLAYER_RADIUS + 6, 0, Math.PI * 2);
+    ctx.arc(this.x, this.y, PLAYER_RADIUS + 6, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
 
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(x, y, PLAYER_RADIUS, 0, Math.PI * 2);
+    ctx.arc(this.x, this.y, PLAYER_RADIUS, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = "white";
     ctx.beginPath();
-    ctx.arc(x, y, PLAYER_RADIUS - 4, 0, Math.PI * 2);
+    ctx.arc(this.x, this.y, PLAYER_RADIUS - 4, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = "black"; ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(x, y, PLAYER_RADIUS, 0, Math.PI * 2);
+    ctx.arc(this.x, this.y, PLAYER_RADIUS, 0, Math.PI * 2);
     ctx.stroke();
 
     if (Math.hypot(this.vx, this.vy) > 0.5) {
       const angle = Math.atan2(this.vy, this.vx);
-      const tx = x + Math.cos(angle) * (PLAYER_RADIUS - 6);
-      const ty = y + Math.sin(angle) * (PLAYER_RADIUS - 6);
+      const tx = this.x + Math.cos(angle) * (PLAYER_RADIUS - 6);
+      const ty = this.y + Math.sin(angle) * (PLAYER_RADIUS - 6);
       ctx.fillStyle = "black";
       ctx.beginPath();
       ctx.arc(tx, ty, 5, 0, Math.PI * 2);
@@ -426,27 +333,24 @@ class Player {
     ctx.font = "12px Consolas";
     const nameW = ctx.measureText(this.nickname).width;
     ctx.fillStyle = "rgba(0,0,0,0.47)";
-    ctx.fillRect(x - nameW / 2 - 4, y - PLAYER_RADIUS - 22, nameW + 8, 18);
+    ctx.fillRect(this.x - nameW / 2 - 4, this.y - PLAYER_RADIUS - 22, nameW + 8, 18);
     ctx.fillStyle = "white";
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
-    ctx.fillText(this.nickname, x - nameW / 2, y - PLAYER_RADIUS - 13);
+    ctx.fillText(this.nickname, this.x - nameW / 2, this.y - PLAYER_RADIUS - 13);
 
     ctx.font = "bold 18px Consolas";
     ctx.fillStyle = "black";
     ctx.textAlign = "center";
-    ctx.fillText(this.label, x, y + 1);
+    ctx.fillText(this.label, this.x, this.y + 1);
   }
 }
 
-// ==================== BALL ====================
 class Ball {
   constructor(x, y) {
     this.x = x; this.y = y; this.vx = 0; this.vy = 0;
     this.resetTimer = 0;
     this.trail = new Trail(14);
     this.lastToucher = null;
-    this.renderX = x; this.renderY = y;
-    this.prevX = x; this.prevY = y;
   }
   update(players) {
     if (this.resetTimer > 0) {
@@ -501,11 +405,13 @@ class Ball {
       const nx = (this.x - player.x) / d, ny = (this.y - player.y) / d;
       this.x += nx * overlap; this.y += ny * overlap;
 
+      // Reflect ball velocity off collision normal (bounce)
       const dot = this.vx * nx + this.vy * ny;
       if (dot < 0) {
         this.vx -= 2 * dot * nx;
         this.vy -= 2 * dot * ny;
       }
+      // Add player momentum
       this.vx += player.vx * 0.35;
       this.vy += player.vy * 0.35;
 
@@ -519,23 +425,16 @@ class Ball {
     return null;
   }
   kick(player) {
-    if (player.kickCooldown > 0) return false;
     const d = dist(this.x, this.y, player.x, player.y);
     if (d >= KICK_RANGE || d <= 0) return false;
     const nx = (this.x - player.x) / d, ny = (this.y - player.y) / d;
     this.vx += nx * KICK_POWER; this.vy += ny * KICK_POWER;
     this.lastToucher = player;
-    player.kickCooldown = KICK_COOLDOWN;
     shaker.add(4);
     spawnKickRipple(this.x, this.y, "white");
     return true;
   }
   reset() { this.resetTimer = 60; this.lastToucher = null; }
-  storePrev() { this.prevX = this.x; this.prevY = this.y; }
-  interpolate(alpha) {
-    this.renderX = lerp(this.prevX, this.x, alpha);
-    this.renderY = lerp(this.prevY, this.y, alpha);
-  }
   draw() {
     if (this.resetTimer > 0) return;
     this.trail.draw(BALL_RADIUS - 4, "rgb(255,255,200)");
@@ -543,25 +442,24 @@ class Ball {
   }
   drawShape() {
     if (this.resetTimer > 0) return;
-    const x = this.renderX, y = this.renderY;
 
     ctx.globalAlpha = 0.27;
     ctx.fillStyle = "black";
     ctx.beginPath();
-    ctx.ellipse(x, y + 4, BALL_RADIUS, BALL_RADIUS - 5, 0, 0, Math.PI * 2);
+    ctx.ellipse(this.x, this.y + 4, BALL_RADIUS, BALL_RADIUS - 5, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1;
 
     ctx.fillStyle = "white";
-    ctx.beginPath(); ctx.arc(x, y, BALL_RADIUS, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(this.x, this.y, BALL_RADIUS, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "rgb(220,220,220)";
-    ctx.beginPath(); ctx.arc(x, y, BALL_RADIUS - 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(this.x, this.y, BALL_RADIUS - 4, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "black"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(x, y, BALL_RADIUS, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(this.x, this.y, BALL_RADIUS, 0, Math.PI * 2); ctx.stroke();
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(x - BALL_RADIUS + 4, y);
-    ctx.lineTo(x + BALL_RADIUS - 4, y);
+    ctx.moveTo(this.x - BALL_RADIUS + 4, this.y);
+    ctx.lineTo(this.x + BALL_RADIUS - 4, this.y);
     ctx.stroke();
   }
 }
@@ -581,7 +479,6 @@ function resolvePlayerCollisions(players) {
   }
 }
 
-// ==================== DRAWING ====================
 function drawField() {
   const tile = 40;
   ctx.save();
@@ -747,7 +644,7 @@ function drawGhostTrails(history, index) {
   }
 }
 
-// ==================== GAME STATE ====================
+// ===== GAME STATE =====
 const game = {
   state: "menu",
   mode: "1v1",
@@ -761,7 +658,7 @@ const game = {
   pauseTimer: 0,
 };
 
-// ==================== NETWORK STATE ====================
+// ===== NETWORK STATE =====
 const net = {
   online: false,
   isHost: false,
@@ -771,15 +668,9 @@ const net = {
   myTeam: 0,
   myNickname: "Player",
   remoteInputs: {},
-  // New: interpolation buffer
-  stateBuffer: [],
-  lastRecvTime: 0,
-  latency: 0,
-  // New: connection health
-  healthCheckTimer: 0,
-  reconnectAttempts: 0,
-  maxReconnectAttempts: 3,
 };
+let netHistory = [];
+let netParticles = [];
 
 // Key maps for all 4 players
 const KEY_MAPS = {
@@ -817,7 +708,7 @@ function startMatch(mode, nicknames) {
   game.winner = null; game.winnerName = "";
   game.goalMessage = ""; game.goalTimer = 0;
   game.replayFrames = []; game.replayIndex = 0;
-  particlePool.clear();
+  particles = []; netHistory = []; netParticles = [];
   game.state = "playing";
 }
 
@@ -828,7 +719,7 @@ function resetPositions() {
   const t2Idx = is2v2 ? 2 : 1;
   game.players[t2Idx].x = FIELD_RIGHT - 80; game.players[t2Idx].y = HEIGHT / 2 - (is2v2 ? 120 : 0);
   if (is2v2) { game.players[3].x = FIELD_RIGHT - 80; game.players[3].y = HEIGHT / 2 + 120; }
-  for (const p of game.players) { p.vx = 0; p.vy = 0; p.trail.clear(); p.kickCooldown = 0; }
+  for (const p of game.players) { p.vx = 0; p.vy = 0; p.trail.clear(); }
   game.ball.trail.clear();
 }
 
@@ -836,7 +727,7 @@ function getSnapshot() {
   return {
     ball: { x: game.ball.x, y: game.ball.y, vx: game.ball.vx, vy: game.ball.vy },
     players: game.players.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, team: p.team, nickname: p.nickname })),
-    particles: serializeParticles(particlePool.particles),
+    particles: serializeParticles(particles),
     scores: [game.score1, game.score2],
     goalMessage: game.goalMessage,
     goalTimer: game.goalTimer,
@@ -846,7 +737,6 @@ function getSnapshot() {
     shake: shaker.shake,
     mode: game.mode,
     nicknames: game.players.map(p => p.nickname),
-    timestamp: performance.now(),
   };
 }
 
@@ -882,7 +772,7 @@ function endReplay() {
   game.replayFrames = []; game.replayIndex = 0;
   game.ball.reset();
   resetPositions();
-  particlePool.clear();
+  particles = [];
   if (game.winner) {
     game.state = "gameover";
   } else {
@@ -891,64 +781,21 @@ function endReplay() {
   }
 }
 
-// ==================== NETWORK INTERPOLATION ====================
-function pushNetworkState(snap) {
-  net.stateBuffer.push(snap);
-  if (net.stateBuffer.length > NET_BUFFER_SIZE) net.stateBuffer.shift();
-  net.lastRecvTime = performance.now();
-}
-
-function interpolateNetworkState(alpha) {
-  if (net.stateBuffer.length < 2) {
-    if (net.stateBuffer.length === 1) applyNetworkState(net.stateBuffer[0]);
-    return;
-  }
-  // Interpolate between second-newest and newest for smoothness
-  const prev = net.stateBuffer[net.stateBuffer.length - 2];
-  const curr = net.stateBuffer[net.stateBuffer.length - 1];
-
-  // Simple lerp between states
-  game.ball.x = lerp(prev.ball.x, curr.ball.x, alpha);
-  game.ball.y = lerp(prev.ball.y, curr.ball.y, alpha);
-  game.ball.vx = curr.ball.vx; game.ball.vy = curr.ball.vy;
-
-  for (let i = 0; i < game.players.length; i++) {
-    if (i === net.myPlayerIdx) continue; // Don't interpolate local predicted player
-    const pp = prev.players[i];
-    const cp = curr.players[i];
-    if (pp && cp && game.players[i]) {
-      game.players[i].x = lerp(pp.x, cp.x, alpha);
-      game.players[i].y = lerp(pp.y, cp.y, alpha);
-      game.players[i].vx = cp.vx; game.players[i].vy = cp.vy;
-    }
-  }
-
-  game.score1 = curr.scores[0]; game.score2 = curr.scores[1];
-  game.goalMessage = curr.goalMessage; game.goalTimer = curr.goalTimer;
-  game.winner = curr.winner || null; game.winnerName = curr.winnerName;
-  game.state = game.winner ? "gameover" : (curr.replay ? "replay" : "playing");
-  if (curr.shake !== undefined) shaker.shake = curr.shake;
-}
-
-// ==================== UPDATE FUNCTIONS ====================
-function updatePlaying(dt) {
-  if (net.online && !net.isHost) {
-    // Client: apply interpolated network state + local prediction
-    interpolateNetworkState(0.5);
-    // Apply local input immediately for responsiveness
-    if (net.myPlayerIdx >= 0 && game.players[net.myPlayerIdx]) {
-      game.players[net.myPlayerIdx].update(readInput(KEY_MAPS.p1));
-    }
-    return;
-  }
+function updatePlaying() {
+  if (net.online && !net.isHost) return;
 
   const playerCount = game.players.length;
+
   if (net.online) {
+    // Host controls player 0 with their own keyboard
+    // Other players use remote inputs from clients
     for (let i = 0; i < playerCount; i++) {
       let input;
       if (i === 0) {
+        // Host's own player - read keyboard
         input = readInput(KEY_MAPS.p1);
       } else {
+        // Remote players
         input = net.remoteInputs[i] || { up: false, down: false, left: false, right: false };
       }
       game.players[i].update(input);
@@ -969,20 +816,21 @@ function updatePlaying(dt) {
   resolvePlayerCollisions(game.players);
 
   const scorer = game.ball.update(game.players);
-  particlePool.update();
+  for (const pt of particles) pt.update();
+  particles = particles.filter(pt => pt.life > 0);
 
   if (scorer) { triggerGoal(scorer); return; }
   game.replayFrames.push(getSnapshot());
   if (game.replayFrames.length > REPLAY_MAX_FRAMES) game.replayFrames.shift();
 }
 
-function updateReplay(dt) {
+function updateReplay() {
   if (net.online && !net.isHost) return;
   game.replayIndex += 1;
   if (game.replayIndex >= game.replayFrames.length) endReplay();
 }
 
-function updatePaused(dt) {
+function updatePaused() {
   if (net.online && !net.isHost) return;
   game.pauseTimer -= 1;
   if (game.pauseTimer <= 0) {
@@ -1024,6 +872,10 @@ function applyNetworkState(snap) {
   game.winner = snap.winner || null; game.winnerName = snap.winnerName;
   game.state = game.winner ? "gameover" : (snap.replay ? "replay" : "playing");
   if (snap.shake !== undefined) shaker.shake = snap.shake;
+  netParticles = snap.particles;
+
+  netHistory.push({ players: snap.players, ball: snap.ball });
+  if (netHistory.length > GHOST_HISTORY_MAX) netHistory.shift();
 }
 
 function isGhostMode() {
@@ -1037,40 +889,33 @@ function drawParticleList(list) {
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
   }
-  ctx.globalAlpha = 1;
 }
 
-// ==================== RENDER ====================
-function render(alpha) {
+function render() {
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   const [shakeX, shakeY] = shaker.offset();
   ctx.save();
   ctx.translate(shakeX, shakeY);
   drawField();
 
-  // Store previous positions for interpolation
-  for (const p of game.players) p.storePrev();
-  if (game.ball) game.ball.storePrev();
-
   const ghost = isGhostMode();
   if (game.state === "replay" && game.replayFrames.length) {
     applyReplayFrame(game.replayFrames[game.replayIndex]);
   }
 
-  // Interpolate all entities for smooth rendering
-  for (const p of game.players) p.interpolate(alpha);
-  if (game.ball) game.ball.interpolate(alpha);
-
-  const history = game.state === "replay" ? game.replayFrames : [];
-  const index = game.state === "replay" ? game.replayIndex : 0;
+  const history = game.state === "replay" ? game.replayFrames : netHistory;
+  const index = game.state === "replay" ? game.replayIndex : netHistory.length - 1;
   if (ghost && history.length) drawGhostTrails(history, index);
 
   let activeParticles;
   if (game.state === "replay" && game.replayFrames.length) {
     activeParticles = game.replayFrames[game.replayIndex].particles;
+  } else if (net.online && !net.isHost) {
+    activeParticles = netParticles;
   } else {
-    activeParticles = particlePool.particles;
+    activeParticles = particles;
   }
   drawParticleList(activeParticles);
 
@@ -1094,7 +939,8 @@ function render(alpha) {
   ctx.restore();
 }
 
-// ==================== NETWORK FUNCTIONS ====================
+// ===== NETWORK FUNCTIONS =====
+
 function broadcastState() {
   const snap = getSnapshot();
   for (const entry of net.conns) {
@@ -1144,96 +990,51 @@ function sendClientInput() {
   }
 }
 
-// ==================== FIXED TIMESTEP MAIN LOOP ====================
-const engine = new FixedTimestep(PHYSICS_HZ);
-
-function physicsStep(dt) {
-  if (game.state === "playing") updatePlaying(dt);
-  if (game.state === "replay") updateReplay(dt);
-  if (game.state === "paused") updatePaused(dt);
-  shaker.update();
-}
-
-function renderStep(alpha) {
+let lastTime = 0;
+function tick(now) {
+  requestAnimationFrame(tick);
   if (!game.players.length) return;
-  render(alpha);
-}
 
-function gameLoop(now) {
-  requestAnimationFrame(gameLoop);
-  engine.tick(now, physicsStep, renderStep);
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  const dtScale = dt * 60; // normalize to 60fps
 
-  // Network operations (decoupled from physics)
+  if (game.state === "playing") updatePlaying(dtScale);
+  if (game.state === "replay") updateReplay(dtScale);
+  if (game.state === "paused") updatePaused(dtScale);
+  shaker.update(dtScale);
+  render();
+
   if (net.online) {
     netTick++;
-    if (net.isHost && netTick % NET_TICK_RATE === 0) broadcastState();
+    if (net.isHost && netTick % 2 === 0) broadcastState();
     if (!net.isHost) sendClientInput();
 
-    // Connection health check
-    net.healthCheckTimer++;
-    if (net.healthCheckTimer % 180 === 0) { // every ~3 seconds
-      checkConnectionHealth();
-    }
-  }
-}
-
-// ==================== CONNECTION HEALTH ====================
-function checkConnectionHealth() {
-  const now = Date.now();
-  const statusEl = document.getElementById("netStatus");
-
-  if (!net.isHost) {
-    // Client: check if receiving state
-    const timeSinceLast = now - net.lastRecvTime;
-    if (timeSinceLast > 3000) {
-      showNetStatus("Connection unstable...", "warn");
-      if (net.reconnectAttempts < net.maxReconnectAttempts) {
-        net.reconnectAttempts++;
-        attemptReconnect();
+    // Keepalive ping every 150 frames (~2.5s at 60fps)
+    if (netTick % 150 === 0) {
+      if (net.isHost) {
+        for (const entry of net.conns) {
+          safeSend(entry.conn, { type: "ping" });
+        }
+      } else {
+        for (const entry of net.conns) {
+          safeSend(entry.conn, { type: "ping" });
+        }
       }
-    } else if (timeSinceLast > 1000) {
-      showNetStatus("High latency", "warn");
-    } else {
-      showNetStatus("Connected", "good");
-      net.reconnectAttempts = 0;
     }
-  } else {
-    // Host: check clients
-    let stale = 0;
-    for (const entry of net.conns) {
-      if (entry.open && now - entry.lastActivity > 5000) stale++;
-    }
-    if (stale > 0) {
-      showNetStatus(`${stale} player(s) lagging`, "warn");
-    } else {
-      showNetStatus("All connected", "good");
+
+    // Check for dead connections (no activity for 5 seconds)
+    const now2 = Date.now();
+    if (net.isHost) {
+      for (const entry of net.conns) {
+        if (entry.open && now2 - entry.lastActivity > 5000) {
+          console.warn("Connection timed out:", entry.conn.peer);
+        }
+      }
     }
   }
 }
 
-function showNetStatus(text, cls) {
-  const el = document.getElementById("netStatus");
-  el.textContent = text;
-  el.className = "visible " + cls;
-  clearTimeout(el._hideTimer);
-  el._hideTimer = setTimeout(() => el.classList.remove("visible"), 2000);
-}
-
-function attemptReconnect() {
-  // Simple reconnect: if we have a stored host code, try reconnecting
-  const code = document.getElementById("codeInput").value.trim().toLowerCase();
-  if (!code || net.isHost) return;
-
-  // Close old connection
-  teardownPeer();
-
-  // Attempt reconnection after delay
-  setTimeout(() => {
-    document.getElementById("joinConfirm").click();
-  }, 1000 * net.reconnectAttempts);
-}
-
-// ==================== PEER DATA HANDLING ====================
 function handlePeerData(msg, fromConn) {
   if (msg.type === "ping") {
     safeSend(fromConn, { type: "pong" });
@@ -1257,6 +1058,7 @@ function handlePeerData(msg, fromConn) {
         let chosenTeam = msg.team;
         let playerIdx = -1;
 
+        // Check if preferred team has space
         const teamSlots = chosenTeam === 1 ? t1Slots : t2Slots;
         const taken = net.conns.filter(c => c.team === chosenTeam).map(c => c.playerIdx);
         const available = teamSlots.filter(s => !taken.includes(s));
@@ -1264,6 +1066,7 @@ function handlePeerData(msg, fromConn) {
         if (available.length > 0) {
           playerIdx = available[0];
         } else {
+          // Preferred team full, try other team
           const otherTeam = chosenTeam === 1 ? 2 : 1;
           const otherSlots = otherTeam === 1 ? t1Slots : t2Slots;
           const otherTaken = net.conns.filter(c => c.team === otherTeam).map(c => c.playerIdx);
@@ -1299,9 +1102,7 @@ function handlePeerData(msg, fromConn) {
     }
     return;
   }
-  if (msg.type === "state") {
-    pushNetworkState(msg.snap);
-  }
+  if (msg.type === "state") applyNetworkState(msg.snap);
   if (msg.type === "lobby") updateClientLobby(msg.lobby);
   if (msg.type === "assign") {
     net.myPlayerIdx = msg.playerIdx;
@@ -1331,6 +1132,7 @@ function updateClientLobby(lobby) {
     info.textContent = `Team 1: ${lobby.t1Count}/${lobby.mode === "2v2" ? 2 : 1} | Team 2: ${lobby.t2Count}/${lobby.mode === "2v2" ? 2 : 1}`;
   }
 
+  // Update wait view player list
   const waitList = document.getElementById("waitPlayerList");
   if (waitList) {
     const hostName = lobby.hostNickname || "Host";
@@ -1344,7 +1146,8 @@ function updateClientLobby(lobby) {
   }
 }
 
-// ==================== KICK ====================
+// Kicks "my own player" (always players[0] locally, or a network message when
+// I'm a client). Shared by the Space key and the mobile kick button.
 function attemptKick() {
   if (net.online && !net.isHost) {
     if (game.state !== "playing") return;
@@ -1383,7 +1186,7 @@ window.addEventListener("keydown", e => {
 });
 window.addEventListener("keyup", e => game.keysDown.delete(e.code));
 
-// ==================== MOBILE CONTROLS (SMOOTHED) ====================
+// ===== MOBILE CONTROLS =====
 const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
 const mobileControls = document.getElementById("mobileControls");
 const soloControls = document.getElementById("soloControls");
@@ -1407,16 +1210,6 @@ const JOY_RADIUS = 45;
 function setupJoystick(baseEl, knobEl, keyMap) {
   let pointerId = null;
   const dead = 10;
-  let targetDx = 0, targetDy = 0;
-  let currentDx = 0, currentDy = 0;
-
-  // Smooth animation loop for knob
-  function animateKnob() {
-    currentDx += (targetDx - currentDx) * 0.3;
-    currentDy += (targetDy - currentDy) * 0.3;
-    knobEl.style.transform = `translate(${currentDx}px, ${currentDy}px)`;
-    if (pointerId !== null) requestAnimationFrame(animateKnob);
-  }
 
   function move(e) {
     const rect = baseEl.getBoundingClientRect();
@@ -1424,7 +1217,7 @@ function setupJoystick(baseEl, knobEl, keyMap) {
     let dx = e.clientX - cx, dy = e.clientY - cy;
     const d = Math.hypot(dx, dy);
     if (d > JOY_RADIUS) { dx = (dx / d) * JOY_RADIUS; dy = (dy / d) * JOY_RADIUS; }
-    targetDx = dx; targetDy = dy;
+    knobEl.style.transform = `translate(${dx}px, ${dy}px)`;
     setVirtualKey(keyMap.left, dx < -dead);
     setVirtualKey(keyMap.right, dx > dead);
     setVirtualKey(keyMap.up, dy < -dead);
@@ -1432,24 +1225,18 @@ function setupJoystick(baseEl, knobEl, keyMap) {
   }
   function reset() {
     pointerId = null;
-    targetDx = 0; targetDy = 0;
-    currentDx = 0; currentDy = 0;
     knobEl.style.transform = "translate(0px, 0px)";
     setVirtualKey(keyMap.left, false); setVirtualKey(keyMap.right, false);
     setVirtualKey(keyMap.up, false); setVirtualKey(keyMap.down, false);
   }
 
-  baseEl.addEventListener("pointerdown", e => {
-    pointerId = e.pointerId;
-    baseEl.setPointerCapture(e.pointerId);
-    move(e);
-    requestAnimationFrame(animateKnob);
-  });
+  baseEl.addEventListener("pointerdown", e => { pointerId = e.pointerId; baseEl.setPointerCapture(e.pointerId); move(e); });
   baseEl.addEventListener("pointermove", e => { if (e.pointerId === pointerId) move(e); });
   baseEl.addEventListener("pointerup", e => { if (e.pointerId === pointerId) reset(); });
   baseEl.addEventListener("pointercancel", e => { if (e.pointerId === pointerId) reset(); });
 }
 
+// releaseOnly = true fires the kick on finger-up instead of finger-down.
 function setupKickButton(el, onKick, releaseOnly) {
   el.addEventListener("pointerdown", e => {
     e.preventDefault();
@@ -1480,7 +1267,7 @@ canvas.addEventListener("pointerdown", () => {
   if (game.state === "gameover" && (!net.online || net.isHost)) startMatch(game.mode);
 });
 
-// ==================== NICKNAME ====================
+// ===== NICKNAME =====
 const nicknameInput = document.getElementById("nicknameInput");
 if (nicknameInput) {
   const saved = localStorage.getItem("fb_nickname");
@@ -1494,7 +1281,7 @@ function getNickname() {
   return (el ? el.value.trim() : "") || "Player";
 }
 
-// ==================== UI ====================
+// ===== UI =====
 const menu = document.getElementById("menu");
 const hostMenu = document.getElementById("hostMenu");
 const hostView = document.getElementById("hostView");
@@ -1520,9 +1307,6 @@ function teardownPeer() {
   net.myPlayerIdx = -1;
   net.myTeam = 0;
   net.remoteInputs = {};
-  net.stateBuffer = [];
-  net.reconnectAttempts = 0;
-  document.getElementById("netStatus").classList.remove("visible");
 }
 
 function showNotice(text) {
@@ -1549,6 +1333,7 @@ function updatePlayerList() {
     html += `<span class="${c.team === 1 ? "t1" : "t2"}">${name} — ${teamLabel}</span>`;
   });
 
+  // Show empty slots
   for (let i = connected.length; i < maxPlayers - 1; i++) {
     html += `<span class="waiting">Waiting...</span>`;
   }
@@ -1578,6 +1363,7 @@ function updatePlayerList() {
   }
 }
 
+
 function safeSend(conn, data) {
   if (conn && conn.open) {
     try {
@@ -1587,7 +1373,6 @@ function safeSend(conn, data) {
     }
   }
 }
-
 function setupConnection(conn) {
   const entry = { conn, playerIdx: -1, team: 0, nickname: "Player", lastActivity: Date.now(), open: false };
   net.conns.push(entry);
@@ -1595,6 +1380,7 @@ function setupConnection(conn) {
   conn.on("open", () => {
     entry.open = true;
     entry.lastActivity = Date.now();
+    // Small delay to ensure client is ready to receive
     setTimeout(() => {
       safeSend(conn, { type: "lobby", lobby: getLobbyState() });
     }, 100);
@@ -1606,8 +1392,10 @@ function setupConnection(conn) {
   conn.on("close", () => {
     const wasOpen = entry.open;
     entry.open = false;
+    // Remove from connections list
     net.conns = net.conns.filter(c => c.conn !== conn);
     updatePlayerList();
+    // Only show disconnect notice if connection was open and game is in progress
     if (wasOpen && game.state !== "menu" && game.state !== "gameover") {
       showNotice("A player disconnected.");
     }
@@ -1617,10 +1405,11 @@ function setupConnection(conn) {
     console.error("Connection error:", err);
     net.conns = net.conns.filter(c => c.conn !== conn);
     updatePlayerList();
+    // Don't destroy host on transient errors
   });
 }
 
-// ==================== HOST UI ====================
+// Host mode selection
 let selectedMode = "1v1";
 document.getElementById("host1v1").addEventListener("click", () => {
   selectedMode = "1v1";
@@ -1679,16 +1468,20 @@ document.getElementById("hostStart").addEventListener("click", () => {
     if (fatal.includes(err.type)) {
       showNotice("Could not reach the multiplayer relay. Check your connection.");
     }
+    // Non-fatal errors (peer-unavailable, network, disconnected, webrtc) are ignored
+    // so the host stays alive for other clients to connect
   });
 });
 
 document.getElementById("hostStartGame").addEventListener("click", () => {
   net.myNickname = getNickname();
+  // Build nickname map: host is index 0, clients mapped by playerIdx
   const nicknames = {};
   nicknames[0] = net.myNickname;
   net.conns.forEach(c => {
     if (c.playerIdx >= 0) nicknames[c.playerIdx] = c.nickname || `Player ${c.playerIdx + 1}`;
   });
+  // Notify all clients that game is starting
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
       safeSend(entry.conn, { type: "start", mode: selectedMode, nicknames });
@@ -1770,6 +1563,7 @@ document.getElementById("joinConfirm").addEventListener("click", () => {
   });
 });
 
+// Team selection buttons
 document.getElementById("pickT1").addEventListener("click", () => {
   net.myNickname = getNickname();
   for (const entry of net.conns) {
@@ -1807,8 +1601,7 @@ document.getElementById("noticeOk").addEventListener("click", () => {
   showOnly(menu);
 });
 
-// Start the engine
-requestAnimationFrame(gameLoop);
+tick();
 </script>
 </body>
 </html>
