@@ -708,7 +708,7 @@ function startMatch(mode, nicknames) {
   game.winner = null; game.winnerName = "";
   game.goalMessage = ""; game.goalTimer = 0;
   game.replayFrames = []; game.replayIndex = 0;
-  particles = []; netHistory = []; netParticles = [];
+  particles = []; netHistory = []; netParticles = []; snapBuffer = [];
   game.state = "playing";
 }
 
@@ -851,20 +851,19 @@ function applyReplayFrame(frame) {
   if (frame.shake !== undefined) shaker.shake = frame.shake;
 }
 
+// Positions are NOT applied directly here. They're buffered with an arrival
+// timestamp so render() can interpolate between the last two snapshots
+// instead of teleporting the client's view to whatever arrived most recently
+// (which is what caused the jitter/teleporting at the ~30Hz broadcast rate).
 function applyNetworkState(snap) {
   if (snap.mode && snap.mode !== game.mode) {
     game.mode = snap.mode;
     game.players = makePlayers(game.mode, snap.nicknames);
+    snapBuffer = [];
   }
 
-  game.ball.x = snap.ball.x; game.ball.y = snap.ball.y;
-  game.ball.vx = snap.ball.vx; game.ball.vy = snap.ball.vy;
   snap.players.forEach((sp, i) => {
-    if (game.players[i]) {
-      game.players[i].x = sp.x; game.players[i].y = sp.y;
-      game.players[i].vx = sp.vx; game.players[i].vy = sp.vy;
-      if (sp.nickname) game.players[i].nickname = sp.nickname;
-    }
+    if (game.players[i] && sp.nickname) game.players[i].nickname = sp.nickname;
   });
 
   game.score1 = snap.scores[0]; game.score2 = snap.scores[1];
@@ -874,8 +873,43 @@ function applyNetworkState(snap) {
   if (snap.shake !== undefined) shaker.shake = snap.shake;
   netParticles = snap.particles;
 
+  snapBuffer.push({ time: performance.now(), ball: snap.ball, players: snap.players });
+  if (snapBuffer.length > 12) snapBuffer.shift();
+
   netHistory.push({ players: snap.players, ball: snap.ball });
   if (netHistory.length > GHOST_HISTORY_MAX) netHistory.shift();
+}
+
+function lerpEntity(a, b, t) {
+  return {
+    x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
+    vx: (a.vx || 0) + ((b.vx || 0) - (a.vx || 0)) * t,
+    vy: (a.vy || 0) + ((b.vy || 0) - (a.vy || 0)) * t,
+  };
+}
+
+// Renders ~100ms in the past so there are (almost) always two real snapshots
+// straddling the render time to interpolate between.
+const INTERP_DELAY_MS = 100;
+let snapBuffer = [];
+
+function getInterpolatedNetState() {
+  if (!snapBuffer.length) return null;
+  if (snapBuffer.length === 1) return snapBuffer[0];
+
+  const renderTime = performance.now() - INTERP_DELAY_MS;
+  let i = snapBuffer.length - 1;
+  while (i > 0 && snapBuffer[i - 1].time > renderTime) i--;
+  const b = snapBuffer[i];
+  const a = snapBuffer[Math.max(0, i - 1)];
+  if (a === b) return b;
+
+  const span = b.time - a.time || 1;
+  const t = clamp((renderTime - a.time) / span, 0, 1);
+  return {
+    ball: lerpEntity(a.ball, b.ball, t),
+    players: a.players.map((ap, idx) => lerpEntity(ap, b.players[idx] || ap, t)),
+  };
 }
 
 function isGhostMode() {
@@ -903,6 +937,18 @@ function render() {
   const ghost = isGhostMode();
   if (game.state === "replay" && game.replayFrames.length) {
     applyReplayFrame(game.replayFrames[game.replayIndex]);
+  }
+  if (net.online && !net.isHost) {
+    const interp = getInterpolatedNetState();
+    if (interp) {
+      game.ball.x = interp.ball.x; game.ball.y = interp.ball.y;
+      game.ball.vx = interp.ball.vx; game.ball.vy = interp.ball.vy;
+      interp.players.forEach((ip, i) => {
+        if (!game.players[i]) return;
+        game.players[i].x = ip.x; game.players[i].y = ip.y;
+        game.players[i].vx = ip.vx; game.players[i].vy = ip.vy;
+      });
+    }
   }
 
   const history = game.state === "replay" ? game.replayFrames : netHistory;
@@ -974,7 +1020,10 @@ function getLobbyState() {
 }
 
 let lastInputStr = "";
-let netTick = 0;
+let simTick = 0;
+let lastPingTime = 0;
+const PING_INTERVAL_MS = 2000;
+const CONN_TIMEOUT_MS = 6000;
 
 function sendClientInput() {
   if (!net.conns.length) return;
@@ -990,61 +1039,68 @@ function sendClientInput() {
   }
 }
 
-let lastTime = 0;
-function tick(now) {
-  requestAnimationFrame(tick);
-  if (!game.players.length) return;
+function runNetworkTick() {
+  if (net.isHost && simTick % 2 === 0) broadcastState();
+  if (!net.isHost) sendClientInput();
 
-  const dt = (now - lastTime) / 1000;
-  lastTime = now;
-  const dtScale = dt * 60; // normalize to 60fps
-
-  if (game.state === "playing") updatePlaying(dtScale);
-  if (game.state === "replay") updateReplay(dtScale);
-  if (game.state === "paused") updatePaused(dtScale);
-  shaker.update(dtScale);
-  render();
-
-  if (net.online) {
-    netTick++;
-    if (net.isHost && netTick % 2 === 0) broadcastState();
-    if (!net.isHost) sendClientInput();
-
-    // Keepalive ping every 150 frames (~2.5s at 60fps)
-    if (netTick % 150 === 0) {
-      if (net.isHost) {
-        for (const entry of net.conns) {
-          safeSend(entry.conn, { type: "ping" });
-        }
-      } else {
-        for (const entry of net.conns) {
-          safeSend(entry.conn, { type: "ping" });
-        }
-      }
-    }
-
-    // Check for dead connections (no activity for 5 seconds)
-    const now2 = Date.now();
-    if (net.isHost) {
-      for (const entry of net.conns) {
-        if (entry.open && now2 - entry.lastActivity > 5000) {
-          console.warn("Connection timed out:", entry.conn.peer);
-        }
-      }
-    }
+  const nowMs = Date.now();
+  if (nowMs - lastPingTime > PING_INTERVAL_MS) {
+    lastPingTime = nowMs;
+    for (const entry of net.conns) safeSend(entry.conn, { type: "ping" });
+  }
+  for (const entry of net.conns.slice()) {
+    if (entry.open && nowMs - entry.lastActivity > CONN_TIMEOUT_MS) handleConnectionLost(entry.conn);
   }
 }
 
+// All gameplay logic advances in fixed 1/60s steps, regardless of display
+// refresh rate. This keeps ball/player speed identical on a 60Hz, 90Hz or
+// 144Hz screen and keeps network broadcast/ping cadence tied to real time
+// instead of however many rAF callbacks the monitor happens to fire.
+function stepSimulation() {
+  if (game.state === "playing") updatePlaying();
+  if (game.state === "replay") updateReplay();
+  if (game.state === "paused") updatePaused();
+  shaker.update();
+  simTick++;
+  if (net.online) runNetworkTick();
+}
+
+const SIM_STEP_MS = 1000 / 60;
+const MAX_STEPS_PER_FRAME = 5; // catch-up cap so a stalled tab can't spiral
+let accumulatorMs = 0;
+let lastFrameTime = 0;
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  if (!game.players.length) { lastFrameTime = now; return; }
+  if (!lastFrameTime) lastFrameTime = now;
+
+  let frameMs = now - lastFrameTime;
+  lastFrameTime = now;
+  if (frameMs > 250) frameMs = 250;
+  accumulatorMs += frameMs;
+
+  let steps = 0;
+  while (accumulatorMs >= SIM_STEP_MS && steps < MAX_STEPS_PER_FRAME) {
+    stepSimulation();
+    accumulatorMs -= SIM_STEP_MS;
+    steps++;
+  }
+  if (steps === MAX_STEPS_PER_FRAME) accumulatorMs = 0;
+
+  render();
+}
+
 function handlePeerData(msg, fromConn) {
+  const liveEntry = net.conns.find(c => c.conn === fromConn);
+  if (liveEntry) liveEntry.lastActivity = Date.now();
+
   if (msg.type === "ping") {
     safeSend(fromConn, { type: "pong" });
     return;
   }
-  if (msg.type === "pong") {
-    const entry = net.conns.find(c => c.conn === fromConn);
-    if (entry) entry.lastActivity = Date.now();
-    return;
-  }
+  if (msg.type === "pong") return;
   if (net.isHost) {
     if (msg.type === "teamPick") {
       const entry = net.conns.find(c => c.conn === fromConn);
@@ -1209,28 +1265,44 @@ const JOY_RADIUS = 45;
 
 function setupJoystick(baseEl, knobEl, keyMap) {
   let pointerId = null;
-  const dead = 10;
+  // Hysteresis: a direction needs a bigger push to turn on than to turn off,
+  // so a finger resting near the edge of the dead zone can't flicker a key
+  // on/off every frame from a pixel of touch-sensor noise.
+  const ON = 12, OFF = 6;
+  let active = { left: false, right: false, up: false, down: false };
+
+  function updateAxis(key, comparator) {
+    const threshold = active[key] ? OFF : ON;
+    const shouldBeActive = comparator(threshold);
+    if (shouldBeActive === active[key]) return;
+    active[key] = shouldBeActive;
+    setVirtualKey(keyMap[key], shouldBeActive);
+  }
 
   function move(e) {
+    e.preventDefault();
     const rect = baseEl.getBoundingClientRect();
     const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
     let dx = e.clientX - cx, dy = e.clientY - cy;
     const d = Math.hypot(dx, dy);
     if (d > JOY_RADIUS) { dx = (dx / d) * JOY_RADIUS; dy = (dy / d) * JOY_RADIUS; }
-    knobEl.style.transform = `translate(${dx}px, ${dy}px)`;
-    setVirtualKey(keyMap.left, dx < -dead);
-    setVirtualKey(keyMap.right, dx > dead);
-    setVirtualKey(keyMap.up, dy < -dead);
-    setVirtualKey(keyMap.down, dy > dead);
+    knobEl.style.transform = `translate(${Math.round(dx)}px, ${Math.round(dy)}px)`;
+
+    updateAxis("left", t => dx < -t);
+    updateAxis("right", t => dx > t);
+    updateAxis("up", t => dy < -t);
+    updateAxis("down", t => dy > t);
   }
   function reset() {
     pointerId = null;
     knobEl.style.transform = "translate(0px, 0px)";
-    setVirtualKey(keyMap.left, false); setVirtualKey(keyMap.right, false);
-    setVirtualKey(keyMap.up, false); setVirtualKey(keyMap.down, false);
+    for (const key of ["left", "right", "up", "down"]) {
+      active[key] = false;
+      setVirtualKey(keyMap[key], false);
+    }
   }
 
-  baseEl.addEventListener("pointerdown", e => { pointerId = e.pointerId; baseEl.setPointerCapture(e.pointerId); move(e); });
+  baseEl.addEventListener("pointerdown", e => { e.preventDefault(); pointerId = e.pointerId; baseEl.setPointerCapture(e.pointerId); move(e); });
   baseEl.addEventListener("pointermove", e => { if (e.pointerId === pointerId) move(e); });
   baseEl.addEventListener("pointerup", e => { if (e.pointerId === pointerId) reset(); });
   baseEl.addEventListener("pointercancel", e => { if (e.pointerId === pointerId) reset(); });
@@ -1373,12 +1445,42 @@ function safeSend(conn, data) {
     }
   }
 }
+// Single path for "this connection is gone", whether we learned that from a
+// clean close event, a transport error, or the timeout watchdog noticing
+// silence. Guarded by entry.lost so a connection can only report once even
+// if close/error/timeout all fire for it.
+function handleConnectionLost(conn) {
+  const entry = net.conns.find(c => c.conn === conn);
+  if (entry && entry.lost) return;
+  if (entry) { entry.lost = true; entry.open = false; }
+  const wasOpen = entry ? entry.wasOpen : true;
+
+  net.conns = net.conns.filter(c => c.conn !== conn);
+  updatePlayerList();
+
+  if (wasOpen && game.state !== "menu" && game.state !== "gameover") {
+    showNotice(net.isHost ? "A player disconnected." : "Host disconnected.");
+  }
+}
+
+// The signaling link to the relay (separate from the peer-to-peer data
+// connection) can drop and come back on its own; without this the peer
+// object is just dead until the user manually leaves and retries.
+function wireSignalingReconnect(peer) {
+  peer.on("disconnected", () => {
+    setTimeout(() => {
+      if (peer && !peer.destroyed) peer.reconnect();
+    }, 1000);
+  });
+}
+
 function setupConnection(conn) {
-  const entry = { conn, playerIdx: -1, team: 0, nickname: "Player", lastActivity: Date.now(), open: false };
+  const entry = { conn, playerIdx: -1, team: 0, nickname: "Player", lastActivity: Date.now(), open: false, wasOpen: false, lost: false };
   net.conns.push(entry);
 
   conn.on("open", () => {
     entry.open = true;
+    entry.wasOpen = true;
     entry.lastActivity = Date.now();
     // Small delay to ensure client is ready to receive
     setTimeout(() => {
@@ -1388,24 +1490,10 @@ function setupConnection(conn) {
   });
 
   conn.on("data", data => handlePeerData(data, conn));
-
-  conn.on("close", () => {
-    const wasOpen = entry.open;
-    entry.open = false;
-    // Remove from connections list
-    net.conns = net.conns.filter(c => c.conn !== conn);
-    updatePlayerList();
-    // Only show disconnect notice if connection was open and game is in progress
-    if (wasOpen && game.state !== "menu" && game.state !== "gameover") {
-      showNotice("A player disconnected.");
-    }
-  });
-
+  conn.on("close", () => handleConnectionLost(conn));
   conn.on("error", (err) => {
     console.error("Connection error:", err);
-    net.conns = net.conns.filter(c => c.conn !== conn);
-    updatePlayerList();
-    // Don't destroy host on transient errors
+    handleConnectionLost(conn);
   });
 }
 
@@ -1446,6 +1534,7 @@ document.getElementById("hostStart").addEventListener("click", () => {
   updatePlayerList();
 
   net.peer = new Peer({ config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:global.stun.twilio.com:3478" }] } });
+  wireSignalingReconnect(net.peer);
   net.peer.on("open", id => {
     document.getElementById("roomCode").textContent = id.toUpperCase();
     document.getElementById("hostStatus").textContent = "Waiting for players to join…";
@@ -1514,6 +1603,7 @@ document.getElementById("joinConfirm").addEventListener("click", () => {
 
   document.getElementById("joinStatus").textContent = "Connecting…";
   net.peer = new Peer({ config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:global.stun.twilio.com:3478" }] } });
+  wireSignalingReconnect(net.peer);
 
   let connectTimeout = setTimeout(() => {
     document.getElementById("joinStatus").textContent = "Connection timed out. Host may be unreachable.";
@@ -1522,13 +1612,15 @@ document.getElementById("joinConfirm").addEventListener("click", () => {
 
   net.peer.on("open", () => {
     const conn = net.peer.connect(code, { reliable: true });
-    net.conns = [{ conn, playerIdx: -1, team: 0, lastActivity: Date.now(), open: false }];
+    const entry = { conn, playerIdx: -1, team: 0, nickname: "Player", lastActivity: Date.now(), open: false, wasOpen: false, lost: false };
+    net.conns = [entry];
 
     conn.on("data", data => handlePeerData(data, conn));
 
     conn.on("open", () => {
       clearTimeout(connectTimeout);
-      net.conns[0].open = true;
+      entry.open = true; entry.wasOpen = true;
+      entry.lastActivity = Date.now();
       net.online = true;
       net.isHost = false;
       joinView.classList.add("hidden");
@@ -1537,15 +1629,17 @@ document.getElementById("joinConfirm").addEventListener("click", () => {
 
     conn.on("close", () => {
       clearTimeout(connectTimeout);
-      if (game.state !== "menu" && game.state !== "gameover") {
-        showNotice("Host disconnected.");
-      }
+      handleConnectionLost(conn);
     });
 
     conn.on("error", (err) => {
       clearTimeout(connectTimeout);
       console.error("Client connection error:", err);
-      document.getElementById("joinStatus").textContent = "Connection failed. Try again.";
+      if (!entry.wasOpen) {
+        document.getElementById("joinStatus").textContent = "Connection failed. Try again.";
+        return;
+      }
+      handleConnectionLost(conn);
     });
   });
 
