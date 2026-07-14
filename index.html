@@ -51,7 +51,33 @@
   .player-list .t1 { background: rgba(0,220,255,0.1); color: rgb(0,220,255); }
   .player-list .t2 { background: rgba(255,60,80,0.1); color: rgb(255,60,80); }
   .player-list .waiting { opacity: 0.4; }
+
+  #mobileControls { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+  #mobileControls.hidden, #dualControls.hidden, #soloControls.hidden { display: none; }
+  .joy-base {
+    position: absolute; bottom: 26px; width: 130px; height: 130px; border-radius: 50%;
+    background: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25);
+    touch-action: none; pointer-events: auto;
+  }
+  .joy-base.left { left: 26px; }
+  .joy-base.right { right: 26px; }
+  .joy-knob {
+    position: absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin: -28px 0 0 -28px;
+    border-radius: 50%; background: rgba(255,100,50,0.85); border: 2px solid rgba(255,255,255,0.5);
+  }
+  .kick-btn {
+    position: absolute; bottom: 36px; width: 92px; height: 92px; border-radius: 50%;
+    background: rgba(255,100,50,0.75); border: 2px solid rgba(255,255,255,0.5); color: white;
+    font-family: Consolas, monospace; font-weight: bold; font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+    touch-action: none; pointer-events: auto; user-select: none;
+  }
+  .kick-btn.left { left: 172px; }
+  .kick-btn.right { right: 172px; }
+  .kick-btn.corner-right { right: 30px; }
+  .kick-btn.active { background: rgba(255,140,80,0.95); }
 </style>
+<base target="_blank">
 <base target="_blank">
 </head>
 <body>
@@ -61,6 +87,7 @@
   <div id="menu" class="overlay">
     <h1>FOOTBALL ONLINE</h1>
     <p>Local: Team 1 = WASD + SPACE, Team 2 = Arrows + ENTER<br>Online: both players use WASD + SPACE on their own device<br>First to 5 goals wins</p>
+    <input id="nicknameInput" maxlength="12" placeholder="YOUR NICKNAME" value="Player" style="width:240px; font-size:16px; padding:8px;">
     <button id="localBtn">Local 1v1</button>
     <button id="hostBtn">Host Online Game</button>
     <button id="joinBtn">Join Online Game</button>
@@ -119,6 +146,19 @@
     <h1>DISCONNECTED</h1>
     <p id="noticeText"></p>
     <button id="noticeOk">Back to Menu</button>
+  </div>
+
+  <div id="mobileControls" class="hidden">
+    <div id="soloControls">
+      <div id="joystick" class="joy-base left"><div id="joystickKnob" class="joy-knob"></div></div>
+      <div id="kickBtn" class="kick-btn corner-right">KICK</div>
+    </div>
+    <div id="dualControls" class="hidden">
+      <div id="joystickA" class="joy-base left"><div id="joystickKnobA" class="joy-knob"></div></div>
+      <div id="kickA" class="kick-btn left">KICK</div>
+      <div id="kickB" class="kick-btn right">KICK</div>
+      <div id="joystickB" class="joy-base right"><div id="joystickKnobB" class="joy-knob"></div></div>
+    </div>
   </div>
 </div>
 
@@ -626,6 +666,7 @@ const net = {
   conns: [],
   myPlayerIdx: -1,
   myTeam: 0,
+  myNickname: "Player",
   remoteInputs: {},
 };
 let netHistory = [];
@@ -648,19 +689,20 @@ function readInput(keyMap) {
   };
 }
 
-function makePlayers(mode) {
+function makePlayers(mode, nicknames) {
   const is2v2 = mode === "2v2";
+  const n = nicknames || {};
   const players = [];
-  players.push(new Player(FIELD_LEFT + 80, HEIGHT / 2 - (is2v2 ? 120 : 0), "1", 1, "T1 P1"));
-  if (is2v2) players.push(new Player(FIELD_LEFT + 80, HEIGHT / 2 + 120, "2", 1, "T1 P2"));
-  players.push(new Player(FIELD_RIGHT - 80, HEIGHT / 2 - (is2v2 ? 120 : 0), is2v2 ? "3" : "2", 2, "T2 P1"));
-  if (is2v2) players.push(new Player(FIELD_RIGHT - 80, HEIGHT / 2 + 120, "4", 2, "T2 P2"));
+  players.push(new Player(FIELD_LEFT + 80, HEIGHT / 2 - (is2v2 ? 120 : 0), "1", 1, n[0] || "T1 P1"));
+  if (is2v2) players.push(new Player(FIELD_LEFT + 80, HEIGHT / 2 + 120, "2", 1, n[1] || "T1 P2"));
+  players.push(new Player(FIELD_RIGHT - 80, HEIGHT / 2 - (is2v2 ? 120 : 0), is2v2 ? "3" : "2", 2, n[2] || "T2 P1"));
+  if (is2v2) players.push(new Player(FIELD_RIGHT - 80, HEIGHT / 2 + 120, "4", 2, n[3] || "T2 P2"));
   return players;
 }
 
-function startMatch(mode) {
+function startMatch(mode, nicknames) {
   game.mode = mode || "1v1";
-  game.players = makePlayers(game.mode);
+  game.players = makePlayers(game.mode, nicknames);
   game.ball = new Ball(WIDTH / 2, HEIGHT / 2);
   game.score1 = 0; game.score2 = 0;
   game.winner = null; game.winnerName = "";
@@ -684,7 +726,7 @@ function resetPositions() {
 function getSnapshot() {
   return {
     ball: { x: game.ball.x, y: game.ball.y, vx: game.ball.vx, vy: game.ball.vy },
-    players: game.players.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, team: p.team })),
+    players: game.players.map(p => ({ x: p.x, y: p.y, vx: p.vx, vy: p.vy, team: p.team, nickname: p.nickname })),
     particles: serializeParticles(particles),
     scores: [game.score1, game.score2],
     goalMessage: game.goalMessage,
@@ -694,6 +736,7 @@ function getSnapshot() {
     winnerName: game.winnerName || "",
     shake: shaker.shake,
     mode: game.mode,
+    nicknames: game.players.map(p => p.nickname),
   };
 }
 
@@ -811,7 +854,7 @@ function applyReplayFrame(frame) {
 function applyNetworkState(snap) {
   if (snap.mode && snap.mode !== game.mode) {
     game.mode = snap.mode;
-    game.players = makePlayers(game.mode);
+    game.players = makePlayers(game.mode, snap.nicknames);
   }
 
   game.ball.x = snap.ball.x; game.ball.y = snap.ball.y;
@@ -820,6 +863,7 @@ function applyNetworkState(snap) {
     if (game.players[i]) {
       game.players[i].x = sp.x; game.players[i].y = sp.y;
       game.players[i].vx = sp.vx; game.players[i].vy = sp.vy;
+      if (sp.nickname) game.players[i].nickname = sp.nickname;
     }
   });
 
@@ -924,7 +968,8 @@ function getLobbyState() {
     t2Count,
     t1Full: t1Count >= (selectedMode === "2v2" ? 2 : 1),
     t2Full: t2Count >= (selectedMode === "2v2" ? 2 : 1),
-    players: net.conns.map(c => ({ team: c.team, playerIdx: c.playerIdx })),
+    players: net.conns.map(c => ({ team: c.team, playerIdx: c.playerIdx, nickname: c.nickname })),
+    hostNickname: net.myNickname || "Host",
   };
 }
 
@@ -1004,6 +1049,7 @@ function handlePeerData(msg, fromConn) {
     if (msg.type === "teamPick") {
       const entry = net.conns.find(c => c.conn === fromConn);
       if (entry) {
+        entry.nickname = msg.nickname || "Player";
         const is2v2 = selectedMode === "2v2";
         const maxPerTeam = is2v2 ? 2 : 1;
         const t1Slots = is2v2 ? [0, 1] : [0];
@@ -1067,7 +1113,8 @@ function handlePeerData(msg, fromConn) {
   }
   if (msg.type === "start") {
     document.getElementById("joinWaitView").classList.add("hidden");
-    startMatch(msg.mode);
+    startMatch(msg.mode, msg.nicknames);
+    setMobileControlsVisible(true);
   }
 }
 
@@ -1088,13 +1135,29 @@ function updateClientLobby(lobby) {
   // Update wait view player list
   const waitList = document.getElementById("waitPlayerList");
   if (waitList) {
-    let html = `<span class="host">Host</span>`;
+    const hostName = lobby.hostNickname || "Host";
+    let html = `<span class="host">${hostName}</span>`;
     lobby.players.forEach(p => {
       const cls = p.team === 1 ? "t1" : "t2";
-      html += `<span class="${cls}">Player ${p.playerIdx + 1} (Team ${p.team})</span>`;
+      const name = p.nickname || `Player ${p.playerIdx + 1}`;
+      html += `<span class="${cls}">${name} (Team ${p.team})</span>`;
     });
     waitList.innerHTML = html;
   }
+}
+
+// Kicks "my own player" (always players[0] locally, or a network message when
+// I'm a client). Shared by the Space key and the mobile kick button.
+function attemptKick() {
+  if (net.online && !net.isHost) {
+    if (game.state !== "playing") return;
+    for (const entry of net.conns) {
+      if (entry.conn && entry.conn.open) safeSend(entry.conn, { type: "kick", playerIdx: net.myPlayerIdx });
+    }
+    return;
+  }
+  if (game.state !== "playing" || !game.players[0]) return;
+  game.ball.kick(game.players[0]);
 }
 
 window.addEventListener("keydown", e => {
@@ -1106,21 +1169,14 @@ window.addEventListener("keydown", e => {
   }
 
   if (net.online && !net.isHost) {
-    if (e.code === "Space" && game.state === "playing") {
-      for (const entry of net.conns) {
-        if (entry.conn && entry.conn.open) {
-          safeSend(entry.conn, { type: "kick", playerIdx: net.myPlayerIdx });
-        }
-      }
-      return;
-    }
+    if (e.code === "Space") attemptKick();
     return;
   }
 
   if (game.state !== "playing") return;
 
   const is2v2 = game.mode === "2v2";
-  if (e.code === KEY_MAPS.p1.kick && game.players[0]) game.ball.kick(game.players[0]);
+  if (e.code === KEY_MAPS.p1.kick) attemptKick();
   if (is2v2 && e.code === KEY_MAPS.p2.kick && game.players[1]) game.ball.kick(game.players[1]);
   if (!net.online) {
     const t2Start = is2v2 ? 2 : 1;
@@ -1129,6 +1185,101 @@ window.addEventListener("keydown", e => {
   }
 });
 window.addEventListener("keyup", e => game.keysDown.delete(e.code));
+
+// ===== MOBILE CONTROLS =====
+const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+const mobileControls = document.getElementById("mobileControls");
+const soloControls = document.getElementById("soloControls");
+const dualControls = document.getElementById("dualControls");
+
+function setMobileControlsVisible(visible) {
+  const show = visible && isTouchDevice;
+  mobileControls.classList.toggle("hidden", !show);
+  if (!show) return;
+  const local = !net.online;
+  soloControls.classList.toggle("hidden", local);
+  dualControls.classList.toggle("hidden", !local);
+}
+
+function setVirtualKey(code, active) {
+  if (active) game.keysDown.add(code); else game.keysDown.delete(code);
+}
+
+const JOY_RADIUS = 45;
+
+function setupJoystick(baseEl, knobEl, keyMap) {
+  let pointerId = null;
+  const dead = 10;
+
+  function move(e) {
+    const rect = baseEl.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    let dx = e.clientX - cx, dy = e.clientY - cy;
+    const d = Math.hypot(dx, dy);
+    if (d > JOY_RADIUS) { dx = (dx / d) * JOY_RADIUS; dy = (dy / d) * JOY_RADIUS; }
+    knobEl.style.transform = `translate(${dx}px, ${dy}px)`;
+    setVirtualKey(keyMap.left, dx < -dead);
+    setVirtualKey(keyMap.right, dx > dead);
+    setVirtualKey(keyMap.up, dy < -dead);
+    setVirtualKey(keyMap.down, dy > dead);
+  }
+  function reset() {
+    pointerId = null;
+    knobEl.style.transform = "translate(0px, 0px)";
+    setVirtualKey(keyMap.left, false); setVirtualKey(keyMap.right, false);
+    setVirtualKey(keyMap.up, false); setVirtualKey(keyMap.down, false);
+  }
+
+  baseEl.addEventListener("pointerdown", e => { pointerId = e.pointerId; baseEl.setPointerCapture(e.pointerId); move(e); });
+  baseEl.addEventListener("pointermove", e => { if (e.pointerId === pointerId) move(e); });
+  baseEl.addEventListener("pointerup", e => { if (e.pointerId === pointerId) reset(); });
+  baseEl.addEventListener("pointercancel", e => { if (e.pointerId === pointerId) reset(); });
+}
+
+// releaseOnly = true fires the kick on finger-up instead of finger-down.
+function setupKickButton(el, onKick, releaseOnly) {
+  el.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    el.classList.add("active");
+    if (!releaseOnly) onKick();
+  });
+  el.addEventListener("pointerup", () => {
+    el.classList.remove("active");
+    if (releaseOnly) onKick();
+  });
+  el.addEventListener("pointercancel", () => el.classList.remove("active"));
+}
+
+function performLocalKick(playerIdx) {
+  if (game.state !== "playing" || !game.players[playerIdx]) return;
+  game.ball.kick(game.players[playerIdx]);
+}
+
+setupJoystick(document.getElementById("joystick"), document.getElementById("joystickKnob"), KEY_MAPS.p1);
+setupKickButton(document.getElementById("kickBtn"), attemptKick, false);
+
+setupJoystick(document.getElementById("joystickA"), document.getElementById("joystickKnobA"), KEY_MAPS.p1);
+setupJoystick(document.getElementById("joystickB"), document.getElementById("joystickKnobB"), KEY_MAPS.p3);
+setupKickButton(document.getElementById("kickA"), () => performLocalKick(0), true);
+setupKickButton(document.getElementById("kickB"), () => performLocalKick(1), true);
+
+canvas.addEventListener("pointerdown", () => {
+  if (game.state === "gameover" && (!net.online || net.isHost)) startMatch(game.mode);
+});
+
+// ===== NICKNAME =====
+const nicknameInput = document.getElementById("nicknameInput");
+if (nicknameInput) {
+  const saved = localStorage.getItem("fb_nickname");
+  if (saved) nicknameInput.value = saved;
+  nicknameInput.addEventListener("input", () => {
+    localStorage.setItem("fb_nickname", nicknameInput.value.trim() || "Player");
+  });
+}
+function getNickname() {
+  const el = document.getElementById("nicknameInput");
+  return (el ? el.value.trim() : "") || "Player";
+}
 
 // ===== UI =====
 const menu = document.getElementById("menu");
@@ -1144,6 +1295,7 @@ function showOnly(view) {
     el.classList.add("hidden");
   }
   view.classList.remove("hidden");
+  setMobileControlsVisible(false);
 }
 
 function teardownPeer() {
@@ -1170,13 +1322,15 @@ function updatePlayerList() {
   const maxPlayers = is2v2 ? 4 : 2;
   const connected = net.conns.filter(c => c.conn && c.conn.open);
   const currentPlayers = 1 + connected.length;
+  const hostName = net.myNickname || "Host";
 
   let html = "";
-  html += `<span class="host">Host (You) ${is2v2 ? "— Team 1" : ""}</span>`;
+  html += `<span class="host">${hostName} (You) ${is2v2 ? "— Team 1" : ""}</span>`;
 
   connected.forEach(c => {
     const teamLabel = c.team === 1 ? "Team 1" : "Team 2";
-    html += `<span class="${c.team === 1 ? "t1" : "t2"}">Player ${c.playerIdx + 1} — ${teamLabel}</span>`;
+    const name = c.nickname || `Player ${c.playerIdx + 1}`;
+    html += `<span class="${c.team === 1 ? "t1" : "t2"}">${name} — ${teamLabel}</span>`;
   });
 
   // Show empty slots
@@ -1220,7 +1374,7 @@ function safeSend(conn, data) {
   }
 }
 function setupConnection(conn) {
-  const entry = { conn, playerIdx: -1, team: 0, lastActivity: Date.now(), open: false };
+  const entry = { conn, playerIdx: -1, team: 0, nickname: "Player", lastActivity: Date.now(), open: false };
   net.conns.push(entry);
 
   conn.on("open", () => {
@@ -1273,6 +1427,7 @@ document.getElementById("host2v2").addEventListener("click", () => {
 document.getElementById("localBtn").addEventListener("click", () => {
   menu.classList.add("hidden");
   startMatch("1v1");
+  setMobileControlsVisible(true);
 });
 
 document.getElementById("hostBtn").addEventListener("click", () => {
@@ -1319,14 +1474,22 @@ document.getElementById("hostStart").addEventListener("click", () => {
 });
 
 document.getElementById("hostStartGame").addEventListener("click", () => {
+  net.myNickname = getNickname();
+  // Build nickname map: host is index 0, clients mapped by playerIdx
+  const nicknames = {};
+  nicknames[0] = net.myNickname;
+  net.conns.forEach(c => {
+    if (c.playerIdx >= 0) nicknames[c.playerIdx] = c.nickname || `Player ${c.playerIdx + 1}`;
+  });
   // Notify all clients that game is starting
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      safeSend(entry.conn, { type: "start", mode: selectedMode });
+      safeSend(entry.conn, { type: "start", mode: selectedMode, nicknames });
     }
   }
   hostView.classList.add("hidden");
-  startMatch(selectedMode);
+  startMatch(selectedMode, nicknames);
+  setMobileControlsVisible(true);
 });
 
 document.getElementById("hostCancel").addEventListener("click", () => {
@@ -1402,9 +1565,10 @@ document.getElementById("joinConfirm").addEventListener("click", () => {
 
 // Team selection buttons
 document.getElementById("pickT1").addEventListener("click", () => {
+  net.myNickname = getNickname();
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      safeSend(entry.conn, { type: "teamPick", team: 1 });
+      safeSend(entry.conn, { type: "teamPick", team: 1, nickname: net.myNickname });
     }
   }
   document.getElementById("pickT1").classList.add("picked");
@@ -1412,9 +1576,10 @@ document.getElementById("pickT1").addEventListener("click", () => {
 });
 
 document.getElementById("pickT2").addEventListener("click", () => {
+  net.myNickname = getNickname();
   for (const entry of net.conns) {
     if (entry.conn && entry.conn.open) {
-      safeSend(entry.conn, { type: "teamPick", team: 2 });
+      safeSend(entry.conn, { type: "teamPick", team: 2, nickname: net.myNickname });
     }
   }
   document.getElementById("pickT2").classList.add("picked");
